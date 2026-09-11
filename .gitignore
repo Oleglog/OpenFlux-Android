@@ -1,5 +1,6 @@
 build/
 dist/
+apks/
 output/
 github_output/
 *.exe
