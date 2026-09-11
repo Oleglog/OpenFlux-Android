@@ -3,10 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/wlynxg/anet"
 	"universal-bypass-tool/socks5"
@@ -55,13 +58,25 @@ func main() {
 	var trans transport.Transport
 
 	switch *transportType {
+	case "vyandex":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		trans = transport.NewCompressedTransport(yandex.NewYandexVolgaTransport(globalDocUrl, config))
 	case "yandex":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")
 		if err != nil {
 			log.Fatal(err)
 		}
-		trans = transport.NewCompressedTransport(yandex.NewYandexDocsTransport(globalDocUrl, config))
+		if isVolgaDoc(globalDocUrl) {
+			log.Printf("[INFO] Detected Volga editor document, switching to vyandex transport")
+			trans = transport.NewCompressedTransport(yandex.NewYandexVolgaTransport(globalDocUrl, config))
+		} else {
+			trans = transport.NewCompressedTransport(yandex.NewYandexDocsTransport(globalDocUrl, config))
+		}
 	case "oneme":
 		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
 		trans = transport.NewCompressedTransport(oneme.NewOneMeTransport(*exitNode, maxToken, uidint, config))
@@ -102,4 +117,28 @@ func readRequiredOption(value, filename, label string) (string, error) {
 		return "", fmt.Errorf("%s is required", label)
 	}
 	return value, nil
+}
+
+func isVolgaDoc(docURL string) bool {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	req, err := http.NewRequest("GET", docURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return false
+	}
+
+	content := string(body)
+	return strings.Contains(content, `"officeType":"volga"`) || (strings.Contains(content, "volga") && !strings.Contains(content, "balancer_url"))
 }
