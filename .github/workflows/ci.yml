@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   go:
-    name: Go tests
+    name: Go tests & Linux binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,16 @@ jobs:
           cache: true
       - run: go test ./...
       - run: go vet ./...
+      - name: Build Linux server binaries
+        run: |
+          mkdir -p bin
+          GOOS=linux GOARCH=amd64 go build -o bin/openflux-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -o bin/openflux-linux-arm64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflux-server-linux-${{ github.sha }}
+          path: bin/openflux-linux-*
+          retention-days: 30
 
   android:
     name: Android debug APKs

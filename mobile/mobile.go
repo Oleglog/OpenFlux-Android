@@ -5,8 +5,11 @@ package mobile
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/transport/yandex"
@@ -32,6 +35,33 @@ func appendLog(message string) {
 	}
 }
 
+func detectTransport(docURL string) string {
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	req, err := http.NewRequest("GET", docURL, nil)
+	if err != nil {
+		return "yandex"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "yandex"
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return "yandex"
+	}
+
+	content := string(body)
+	if strings.Contains(content, `"officeType":"volga"`) || (strings.Contains(content, "volga") && !strings.Contains(content, "balancer_url")) {
+		return "vyandex"
+	}
+	return "yandex"
+}
+
 // Start connects the packet transport. It returns an empty string on success
 // and a user-readable error on failure.
 func Start(documentURL string) string {
@@ -51,10 +81,19 @@ func Start(documentURL string) string {
 
 	utils.EnableDebug()
 	utils.SetLogSink(appendLog)
-	appendLog("[ANDROID] Запуск транспорта Yandex Docs")
 
 	config := transport.DefaultConfig()
-	innerTrans := yandex.NewYandexDocsTransport(documentURL, config)
+	detected := detectTransport(documentURL)
+
+	var innerTrans transport.Transport
+	if detected == "vyandex" {
+		appendLog("[ANDROID] Обнаружен редактор Volga. Запуск транспорта vyandex")
+		innerTrans = yandex.NewYandexVolgaTransport(documentURL, config)
+	} else {
+		appendLog("[ANDROID] Запуск классического транспорта yandex")
+		innerTrans = yandex.NewYandexDocsTransport(documentURL, config)
+	}
+
 	trans := transport.NewCompressedTransport(innerTrans)
 	trans.Receive(func(data []byte) {
 		packet := append([]byte(nil), data...)
