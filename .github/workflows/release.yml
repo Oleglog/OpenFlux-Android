@@ -1,4 +1,4 @@
-name: Android Release
+name: Release
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing Git tag to publish
+        description: "Release tag (e.g. v0.1.0)"
         required: true
-        default: v0.3.0
+        default: v0.1.0
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -18,8 +18,8 @@ permissions:
   contents: write
 
 jobs:
-  android:
-    name: Build and publish Android APKs
+  build-and-release:
+    name: Build APKs and Server Binaries, Publish Release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,47 +48,33 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
-      - name: Restore release keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: Build Linux server binaries
         run: |
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/openflux-release.jks"
-          chmod 600 "$RUNNER_TEMP/openflux-release.jks"
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -o dist/openflux-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -o dist/openflux-linux-arm64 .
 
-      - name: Build signed APKs
-        env:
-          BUILD_TYPE: release
-          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/openflux-release.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: GRADLE_BIN="$(command -v gradle)" ./build_android_app.sh
-
-      - name: Verify APK signatures
-        run: for apk in dist/OpenFlux-android-*-release.apk; do "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"; done
+      - name: Build Android APKs
+        run: |
+          BUILD_TYPE=debug GRADLE_BIN="$(command -v gradle)" ./build_android_app.sh
 
       - name: Generate checksums
-        run: cd dist && sha256sum OpenFlux-android-*-release.apk > SHA256SUMS
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenFlux-Android-${{ env.RELEASE_TAG }}
-          path: |
-            dist/OpenFlux-android-*-release.apk
-            dist/SHA256SUMS
-          if-no-files-found: error
-          retention-days: 90
+        run: |
+          cd dist
+          sha256sum OpenFlux-android-*.apk openflux-linux-* > SHA256SUMS
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$RELEASE_TAG" \
-            dist/OpenFlux-android-*-release.apk \
+            dist/OpenFlux-android-*.apk \
+            dist/openflux-linux-* \
             dist/SHA256SUMS \
-            --verify-tag \
-            --generate-notes \
-            --title "OpenFlux Android $RELEASE_TAG" \
-            --notes "Experimental Android 8+ builds. Choose arm64-v8a for most modern phones, armeabi-v7a for older 32-bit ARM devices, x86/x86_64 for compatible emulators, or universal when unsure. If a debug build is installed, uninstall it once before installing this signed release; later release updates preserve app data."
+            --title "OpenFlux $RELEASE_TAG" \
+            --notes "OpenFlux Android VPN client and Linux exit-node binaries ($RELEASE_TAG). Compatible with upstream OpenFlux with auto-detection for Yandex Docs (both Volga and classic editors)." || \
+          gh release upload "$RELEASE_TAG" \
+            dist/OpenFlux-android-*.apk \
+            dist/openflux-linux-* \
+            dist/SHA256SUMS \
+            --clobber

@@ -1,11 +1,11 @@
 <div align="center">
   <img src="design/logo/avatar.svg" width="112" alt="OpenFlux logo">
   <h1>OpenFlux Android</h1>
-  <p>Encrypted document-transport VPN for Android, desktop clients and Linux exit nodes.</p>
+  <p>Document-transport VPN for Android, desktop clients and Linux exit nodes.</p>
   <p>
-    <a href="https://github.com/damnurmum/OpenFlux-Android/releases/latest"><img src="https://img.shields.io/github/v/release/damnurmum/OpenFlux-Android?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=7aa2f7" alt="Latest release"></a>
-    <a href="https://github.com/damnurmum/OpenFlux-Android/actions/workflows/ci.yml"><img src="https://github.com/damnurmum/OpenFlux-Android/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/github/license/damnurmum/OpenFlux-Android?style=flat-square" alt="GPL-3.0 license"></a>
+    <a href="https://github.com/Oleglog/OpenFlux-Android/releases/latest"><img src="https://img.shields.io/github/v/release/Oleglog/OpenFlux-Android?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=7aa2f7" alt="Latest release"></a>
+    <a href="https://github.com/Oleglog/OpenFlux-Android/actions/workflows/ci.yml"><img src="https://img.shields.io/github/v/release/Oleglog/OpenFlux-Android?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=7aa2f7" alt="CI status"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/Oleglog/OpenFlux-Android?style=flat-square" alt="GPL-3.0 license"></a>
     <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&amp;logo=android&amp;logoColor=white" alt="Android 8 or newer">
   </p>
   <p>
@@ -19,31 +19,24 @@
 
 ![OpenFlux Android: connection, logs and settings](docs/images/openflux-android-tabs.png)
 
-> This repository is an experimental, independently maintained fork of
-> [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux).
-> See [FORK.md](FORK.md) for the differences from upstream.
+> This repository is a fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux) featuring a native Android VPN client, no encryption keys required, and support for the new Yandex Volga editor engine.
 
-OpenFlux is a research TCP tunnel with pluggable transports. This fork adds an
-Android VPN client and mandatory end-to-end encryption for the Yandex Docs
-transport.
+OpenFlux is a research TCP tunnel with pluggable transports.
 
-**[Download the latest Android release](https://github.com/damnurmum/OpenFlux-Android/releases/latest)**
+**[Download latest releases (APKs & server binaries)](https://github.com/Oleglog/OpenFlux-Android/releases/latest)**
 
 ```text
-Android VPN or SOCKS5 client -> encrypted document transport -> Linux exit node -> Internet
+Android VPN or SOCKS5 client -> Yandex Docs (Volga / Classic) -> Linux exit node -> Internet
 ```
 
 ## Features
 
-- Android 8+ client using the system `VpnService` API, with ARM, ARM64, x86 and
-  x86_64 builds;
-- Android 11-style UI with connection controls, logs and settings;
-- AES-256-GCM authenticated encryption with a key derived using scrypt;
-- Android Keystore-backed storage for the document URL and shared secret;
-- encrypted latency checks and a live ping graph;
+- Android 8+ client using the system `VpnService` API (ARM64, ARMv7, x86, x86_64);
+- **Auto-detection of Yandex editor**: supports both the new Volga engine (`vyandex`) and classic editor (`yandex`);
+- **No encryption keys**: compatible with upstream OpenFlux protocol;
+- Pre-built Linux server binaries attached to GitHub releases;
 - DNS-over-HTTPS on Android;
-- desktop SOCKS5 client and Linux exit-node modes;
-- Yandex Docs and experimental MAX transport backends.
+- desktop SOCKS5 client and Linux exit-node modes.
 
 > **MAX transport warning:** the MAX backend sends packets via WebRTC
 > DataChannel on your MAX account. Do not use a primary or important account;
@@ -74,57 +67,31 @@ test.
 
 ## Prepare the private configuration
 
-Create the following files locally and copy the same values to the exit node.
-They are excluded by `.gitignore` and must never be committed:
+## Quick start
 
+### 1. Prepare Yandex document
+1. Create a document on [Yandex Disk](https://disk.yandex.ru/).
+2. Share access: **"Share" → "Anyone with link can edit"**.
+3. Copy the document URL.
+
+### 2. Run on Linux VPS
+Download prebuilt binary from releases:
 ```bash
-printf '%s\n' 'https://your-own-document-url' > document-url
-openssl rand -base64 32 > encryption-key
-chmod 600 document-url encryption-key
+wget https://github.com/Oleglog/OpenFlux-Android/releases/latest/download/openflux-linux-amd64 -O openflux
+chmod +x openflux
+
+# Drop RST packets:
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+
+# Run in background via nohup:
+sudo nohup ./openflux --exit-node --url "YOUR_DOCUMENT_URL" > openflux.log 2>&1 &
 ```
+*(View logs: `tail -f openflux.log`, stop: `sudo pkill -f openflux`)*.
 
-The encryption secret must contain at least 16 characters. Generate a unique
-random value; do not reuse a password. Rotate both the document URL and the
-secret if either is exposed.
-
-## Build the exit node and desktop client
-
-```bash
-go build -o openflux .
-```
-
-Run the Linux exit node as root:
-
-```bash
-sudo iptables -C OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || \
-  sudo iptables -I OUTPUT 1 -p tcp --tcp-flags RST RST -j DROP
-sudo ./openflux --exit-node --transport yandex \
-  --url-file ./document-url --encryption-key-file ./encryption-key
-```
-
-The sample [systemd unit](deploy/openflux.service) expects the binary and
-private files in `/root/openflux`. Review its paths before installing it:
-
-```bash
-sudo install -d -m 700 /root/openflux
-sudo install -m 755 ./openflux /root/openflux/openflux
-sudo install -m 600 ./document-url ./encryption-key /root/openflux/
-sudo install -m 644 deploy/openflux.service /etc/systemd/system/openflux.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now openflux
-sudo systemctl status openflux
-```
-
-Run the desktop client and configure the browser to use SOCKS5 at
-`127.0.0.1:1080`:
-
-```bash
-./openflux --client --transport yandex --socks5 127.0.0.1:1080 \
-  --url-file ./document-url --encryption-key-file ./encryption-key
-```
-
-Add `--debug` only when diagnosing a problem, and inspect logs before sharing
-them.
+### 3. Run on Android
+1. Download `OpenFlux-android-arm64-v8a-debug.apk` (or `universal`) from [Releases](https://github.com/Oleglog/OpenFlux-Android/releases/latest).
+2. Enter your document URL in **Settings**.
+3. Tap **Start VPN** on Home tab. The client auto-detects Volga vs classic engine.
 
 ## Build and install the Android app
 
