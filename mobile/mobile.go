@@ -19,7 +19,6 @@ type packetClient struct {
 	mu        sync.Mutex
 	running   bool
 	transport transport.Transport
-	encrypted *transport.EncryptedTransport
 	packets   [][]byte
 	logs      []string
 }
@@ -35,12 +34,9 @@ func appendLog(message string) {
 
 // Start connects the packet transport. It returns an empty string on success
 // and a user-readable error on failure.
-func Start(documentURL, encryptionSecret string) string {
+func Start(documentURL string) string {
 	if documentURL == "" {
 		return "Ссылка на документ не указана"
-	}
-	if len(encryptionSecret) < 16 {
-		return "Ключ шифрования должен содержать не менее 16 символов"
 	}
 
 	client.mu.Lock()
@@ -51,7 +47,6 @@ func Start(documentURL, encryptionSecret string) string {
 	client.running = true
 	client.packets = nil
 	client.logs = nil
-	client.encrypted = nil
 	client.mu.Unlock()
 
 	utils.EnableDebug()
@@ -59,16 +54,8 @@ func Start(documentURL, encryptionSecret string) string {
 	appendLog("[ANDROID] Запуск транспорта Yandex Docs")
 
 	config := transport.DefaultConfig()
-	encrypted, err := transport.NewEncryptedTransport(
-		yandex.NewYandexDocsTransport(documentURL, config), encryptionSecret, documentURL, false,
-	)
-	if err != nil {
-		client.mu.Lock()
-		client.running = false
-		client.mu.Unlock()
-		return err.Error()
-	}
-	trans := transport.NewCompressedTransport(encrypted)
+	innerTrans := yandex.NewYandexDocsTransport(documentURL, config)
+	trans := transport.NewCompressedTransport(innerTrans)
 	trans.Receive(func(data []byte) {
 		packet := append([]byte(nil), data...)
 		client.mu.Lock()
@@ -93,7 +80,6 @@ func Start(documentURL, encryptionSecret string) string {
 
 	client.mu.Lock()
 	client.transport = trans
-	client.encrypted = encrypted
 	client.mu.Unlock()
 	return ""
 }
@@ -103,7 +89,6 @@ func Stop() {
 	trans := client.transport
 	client.running = false
 	client.transport = nil
-	client.encrypted = nil
 	client.packets = nil
 	client.mu.Unlock()
 	appendLog("[ANDROID] Остановка транспорта")
@@ -113,37 +98,15 @@ func Stop() {
 }
 
 func Ping() string {
-	client.mu.Lock()
-	encrypted := client.encrypted
-	running := client.running
-	client.mu.Unlock()
-	if !running || encrypted == nil {
-		return "Транспорт не запущен"
-	}
-	if err := encrypted.Ping(); err != nil {
-		return err.Error()
-	}
 	return ""
 }
 
 func PingMillis() int64 {
-	client.mu.Lock()
-	encrypted := client.encrypted
-	client.mu.Unlock()
-	if encrypted == nil {
-		return -1
-	}
-	return encrypted.LastPingMillis()
+	return -1
 }
 
 func PingSequence() int64 {
-	client.mu.Lock()
-	encrypted := client.encrypted
-	client.mu.Unlock()
-	if encrypted == nil {
-		return 0
-	}
-	return encrypted.PingSequence()
+	return 0
 }
 
 func IsConnected() bool {

@@ -62,17 +62,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		secret, err := readRequiredOption("", *encryptionKeyFile, "encryption key")
-		if err != nil {
-			log.Fatal(err)
-		}
-		encrypted, err := transport.NewEncryptedTransport(
-			yandex.NewYandexDocsTransport(globalDocUrl, config), secret, globalDocUrl, *exitNode,
-		)
-		if err != nil {
-			log.Fatalf("Configure encrypted transport: %v", err)
-		}
-		trans = transport.NewCompressedTransport(encrypted)
+		trans = transport.NewCompressedTransport(yandex.NewYandexDocsTransport(globalDocUrl, config))
 	case "oneme":
 		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
 		trans = transport.NewCompressedTransport(oneme.NewOneMeTransport(*exitNode, maxToken, uidint, config))

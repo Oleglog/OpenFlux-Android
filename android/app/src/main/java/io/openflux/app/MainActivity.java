@@ -62,11 +62,9 @@ public final class MainActivity extends Activity {
     private LinearLayout root;
     private FrameLayout content;
     private EditText urlInput;
-    private EditText encryptionInput;
     private EditText dnsInput;
     private EditText mtuInput;
     private ImageButton visibilityButton;
-    private ImageButton encryptionVisibilityButton;
     private TextView statusDot;
     private TextView statusView;
     private TextView statusDetail;
@@ -78,12 +76,10 @@ public final class MainActivity extends Activity {
     private LinearLayout vpnButton;
     private TextView vpnButtonText;
     private String documentUrl;
-    private String encryptionSecret;
     private String dnsServer;
     private int mtu;
     private String logs = "";
     private String lastShownError = "";
-    private boolean encryptionVisible;
     private SecureSettings secureSettings;
     private final ArrayList<Float> pingHistory = new ArrayList<>();
     private long lastPingRequestAt;
@@ -108,7 +104,6 @@ public final class MainActivity extends Activity {
         // connection credentials now live only in the Keystore-backed store.
         prefs.edit().remove("document_url").remove("connection_document_url").apply();
         documentUrl = secureSettings.getString("document_url", "");
-        encryptionSecret = secureSettings.getString("encryption_secret", "");
         dnsServer = prefs.getString("dns_server", DEFAULT_DNS);
         mtu = prefs.getInt("mtu", DEFAULT_MTU);
         autoScroll = prefs.getBoolean("auto_scroll", true);
@@ -277,13 +272,10 @@ public final class MainActivity extends Activity {
         page.addView(intro, introParams);
 
         boolean documentConfigured = isValidDocumentUrl(documentUrl);
-        boolean encryptionConfigured = encryptionSecret != null && encryptionSecret.length() >= 16;
         String transportTitle = documentConfigured ? "Yandex Docs" : "Документ не указан";
         String transportDetail = !documentConfigured
                 ? "Укажите HTTPS-ссылку во вкладке «Настройки»"
-                : encryptionConfigured
-                ? "Документ и сквозное шифрование настроены"
-                : "Укажите ключ сквозного шифрования";
+                : "Документ настроен";
         LinearLayout transport = cardRow(R.drawable.ic_link, transportTitle, transportDetail);
         transport.setClickable(true);
         transport.setFocusable(true);
@@ -403,29 +395,6 @@ public final class MainActivity extends Activity {
         page.addView(transportLabel, transportLabelParams);
         page.addView(buildUrlField(), new LinearLayout.LayoutParams(-1, dp(56)));
 
-        LinearLayout.LayoutParams encryptionParams = new LinearLayout.LayoutParams(-1, dp(56));
-        encryptionParams.topMargin = dp(8);
-        page.addView(buildEncryptionField(), encryptionParams);
-        TextView encryptionHint = text(
-                "Одинаковый секрет (минимум 16 символов) должен быть настроен на телефоне и VDS.",
-                11, secondary, false);
-        LinearLayout.LayoutParams encryptionHintParams = matchWrap();
-        encryptionHintParams.topMargin = dp(5);
-        encryptionHintParams.leftMargin = dp(4);
-        encryptionHintParams.rightMargin = dp(4);
-        page.addView(encryptionHint, encryptionHintParams);
-        Button generateKey = new Button(this);
-        generateKey.setText("Сгенерировать безопасный ключ");
-        generateKey.setAllCaps(false);
-        generateKey.setTextColor(accent);
-        generateKey.setTextSize(13);
-        generateKey.setStateListAnimator(null);
-        generateKey.setBackground(ripple(Color.TRANSPARENT, 9));
-        generateKey.setOnClickListener(v -> generateEncryptionSecret());
-        LinearLayout.LayoutParams generateParams = new LinearLayout.LayoutParams(-1, dp(44));
-        generateParams.topMargin = dp(4);
-        page.addView(generateKey, generateParams);
-
         TextView networkLabel = label("СЕТЬ");
         LinearLayout.LayoutParams networkLabelParams = matchWrap();
         networkLabelParams.topMargin = dp(22);
@@ -491,25 +460,6 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams eye = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.END | Gravity.CENTER_VERTICAL);
         eye.rightMargin = dp(4);
         field.addView(visibilityButton, eye);
-        return field;
-    }
-
-    private View buildEncryptionField() {
-        FrameLayout field = new FrameLayout(this);
-        field.setBackground(rounded(surface, border, 1, 10));
-        encryptionInput = settingInput("Ключ сквозного шифрования", encryptionSecret,
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        encryptionInput.setTransformationMethod(encryptionVisible ? null : PasswordTransformationMethod.getInstance());
-        encryptionInput.setPadding(dp(16), 0, dp(56), 0);
-        field.addView(encryptionInput, new FrameLayout.LayoutParams(-1, -1));
-        encryptionVisibilityButton = iconButton(
-                encryptionVisible ? R.drawable.ic_visibility_off : R.drawable.ic_visibility,
-                encryptionVisible ? "Скрыть ключ" : "Показать ключ");
-        encryptionVisibilityButton.setOnClickListener(v -> toggleEncryptionVisibility());
-        FrameLayout.LayoutParams eye = new FrameLayout.LayoutParams(
-                dp(48), dp(48), Gravity.END | Gravity.CENTER_VERTICAL);
-        eye.rightMargin = dp(4);
-        field.addView(encryptionVisibilityButton, eye);
         return field;
     }
 
@@ -620,37 +570,10 @@ public final class MainActivity extends Activity {
         urlInput.setSelection(Math.max(0, Math.min(position, urlInput.length())));
     }
 
-    private void toggleEncryptionVisibility() {
-        int position = encryptionInput.getSelectionStart();
-        encryptionVisible = !encryptionVisible;
-        encryptionInput.setTransformationMethod(
-                encryptionVisible ? null : PasswordTransformationMethod.getInstance());
-        encryptionInput.setTypeface(Typeface.DEFAULT);
-        encryptionVisibilityButton.setImageResource(
-                encryptionVisible ? R.drawable.ic_visibility_off : R.drawable.ic_visibility);
-        encryptionVisibilityButton.setContentDescription(
-                encryptionVisible ? "Скрыть ключ" : "Показать ключ");
-        encryptionInput.setSelection(Math.max(0, Math.min(position, encryptionInput.length())));
-    }
-
-    private void generateEncryptionSecret() {
-        byte[] random = new byte[32];
-        new SecureRandom().nextBytes(random);
-        encryptionSecret = Base64.encodeToString(
-                random, Base64.NO_WRAP | Base64.NO_PADDING | Base64.URL_SAFE);
-        if (encryptionInput != null) {
-            encryptionInput.setText(encryptionSecret);
-            encryptionInput.setSelection(encryptionInput.length());
-        }
-        persistSettings();
-        Toast.makeText(this, "Создан ключ на 256 бит. Передайте его на VDS.", Toast.LENGTH_LONG).show();
-    }
-
     private void captureSettings() {
         readSettingsFromViews();
         persistSettings();
         urlInput = null;
-        encryptionInput = null;
         dnsInput = null;
         mtuInput = null;
         logView = null;
@@ -659,7 +582,6 @@ public final class MainActivity extends Activity {
 
     private void readSettingsFromViews() {
         if (urlInput != null) documentUrl = urlInput.getText().toString().trim();
-        if (encryptionInput != null) encryptionSecret = encryptionInput.getText().toString().trim();
         if (dnsInput != null) dnsServer = dnsInput.getText().toString().trim();
         if (mtuInput != null) {
             try { mtu = Integer.parseInt(mtuInput.getText().toString()); }
@@ -672,7 +594,6 @@ public final class MainActivity extends Activity {
     private void persistSettings() {
         if (dnsServer.isEmpty()) dnsServer = DEFAULT_DNS;
         secureSettings.putString("document_url", documentUrl);
-        secureSettings.putString("encryption_secret", encryptionSecret);
         getPreferences(MODE_PRIVATE).edit()
                 .remove("connection_document_url")
                 .putString("dns_server", dnsServer)
@@ -695,11 +616,6 @@ public final class MainActivity extends Activity {
             showPage(PAGE_SETTINGS);
             return;
         }
-        if (encryptionSecret == null || encryptionSecret.length() < 16) {
-            Toast.makeText(this, "Укажите ключ шифрования: минимум 16 символов", Toast.LENGTH_LONG).show();
-            showPage(PAGE_SETTINGS);
-            return;
-        }
         persistSettings();
         Intent permission = VpnService.prepare(this);
         if (permission != null) startActivityForResult(permission, VPN_PERMISSION_REQUEST);
@@ -716,7 +632,6 @@ public final class MainActivity extends Activity {
         Intent intent = new Intent(this, OpenFluxVpnService.class);
         intent.setAction(OpenFluxVpnService.ACTION_START);
         intent.putExtra(OpenFluxVpnService.EXTRA_DOCUMENT_URL, documentUrl);
-        intent.putExtra(OpenFluxVpnService.EXTRA_ENCRYPTION_SECRET, encryptionSecret);
         intent.putExtra(OpenFluxVpnService.EXTRA_DNS_SERVER, dnsServer);
         intent.putExtra(OpenFluxVpnService.EXTRA_MTU, mtu);
         startForegroundService(intent);
@@ -763,14 +678,13 @@ public final class MainActivity extends Activity {
             return;
         }
 
-        setPingPanelVisible(true);
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastPingRequestAt >= 2000) {
-            lastPingRequestAt = now;
-            Mobile.ping();
-        }
         long sequence = Mobile.pingSequence();
-        if (sequence == 0 || sequence == lastPingSequence) return;
+        if (sequence == 0) {
+            setPingPanelVisible(false);
+            return;
+        }
+        setPingPanelVisible(true);
+        if (sequence == lastPingSequence) return;
         lastPingSequence = sequence;
         long milliseconds = Mobile.pingMillis();
         if (milliseconds < 0) return;

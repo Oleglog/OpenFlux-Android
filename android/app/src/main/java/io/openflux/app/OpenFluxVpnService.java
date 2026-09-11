@@ -25,7 +25,6 @@ public final class OpenFluxVpnService extends VpnService {
     public static final String ACTION_START = "io.openflux.app.START";
     public static final String ACTION_STOP = "io.openflux.app.STOP";
     public static final String EXTRA_DOCUMENT_URL = "document_url";
-    public static final String EXTRA_ENCRYPTION_SECRET = "encryption_secret";
     public static final String EXTRA_DNS_SERVER = "dns_server";
     public static final String EXTRA_MTU = "mtu";
 
@@ -63,14 +62,6 @@ public final class OpenFluxVpnService extends VpnService {
             return START_NOT_STICKY;
         }
         String dnsServer = intent.getStringExtra(EXTRA_DNS_SERVER);
-        String encryptionSecret = intent.getStringExtra(EXTRA_ENCRYPTION_SECRET);
-        if (encryptionSecret == null || encryptionSecret.length() < 16) {
-            lastError = "Ключ шифрования должен содержать не менее 16 символов";
-            status = "Ошибка";
-            running = false;
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         if (dnsServer == null || dnsServer.trim().isEmpty()) dnsServer = "1.1.1.1";
         int mtu = Math.max(576, Math.min(1500, intent.getIntExtra(EXTRA_MTU, 1400)));
 
@@ -83,13 +74,13 @@ public final class OpenFluxVpnService extends VpnService {
         int session = generation.incrementAndGet();
         String selectedDns = dnsServer;
         int selectedMtu = mtu;
-        workers.execute(() -> startTunnel(url, encryptionSecret, selectedDns, selectedMtu, session));
+        workers.execute(() -> startTunnel(url, selectedDns, selectedMtu, session));
         return START_STICKY;
     }
 
-    private void startTunnel(String url, String encryptionSecret, String dnsServer, int mtu, int session) {
+    private void startTunnel(String url, String dnsServer, int mtu, int session) {
         if (!isCurrent(session)) return;
-        String error = Mobile.start(url, encryptionSecret);
+        String error = Mobile.start(url);
         if (error != null && !error.isEmpty()) {
             fail(session, error);
             return;
