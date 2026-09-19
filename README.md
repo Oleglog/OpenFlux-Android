@@ -19,60 +19,49 @@
 
 ![OpenFlux Android: connection, logs and settings](docs/images/openflux-android-tabs.png)
 
-> This repository is a fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux) featuring a native Android VPN client, no encryption keys required, and support for the new Yandex Volga editor engine.
+> This repository is a fork of [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux) featuring a native Android VPN client, optional end-to-end AES-256-GCM encryption, Mail.ru Docs transport, and support for the Yandex Volga editor engine.
 
-OpenFlux is a research TCP tunnel with pluggable transports.
+OpenFlux is a research TCP tunnel with pluggable document-based transports.
 
 **[Download latest releases (APKs & server binaries)](https://github.com/Oleglog/OpenFlux-Android/releases/latest)**
 
 ```text
-Android VPN or SOCKS5 client -> Yandex Docs (Volga / Classic) -> Linux exit node -> Internet
+Android VPN or SOCKS5 client -> Yandex Docs (Volga / Classic) or Mail.ru Docs -> Linux exit node -> Internet
 ```
 
 ## Features
 
 - Android 8+ client using the system `VpnService` API (ARM64, ARMv7, x86, x86_64);
-- **Auto-detection of Yandex editor**: supports both the new Volga engine (`vyandex`) and classic editor (`yandex`);
-- **No encryption keys**: compatible with upstream OpenFlux protocol;
+- **Transports**:
+  - **Yandex Docs**: auto-detects Volga editor engine (`vyandex`) and classic editor (`yandex`);
+  - **Mail.ru Docs**: auto-detected or explicitly configured (`mailru`);
+- **Optional End-to-End AES-256-GCM Encryption**:
+  - Directional AEAD with scrypt key derivation and replay protection;
+  - Zero encryption keys required by default for seamless setup; keys can be optionally enabled on both server and client;
+- **Tunable Codecs**:
+  - `legacy`: LZ4-compressed framing (default on OlConnect servers, fully backwards-compatible with OlConnect Android client);
+  - `batched`: batched transport with zstd compression for high-throughput links;
+- **Network Isolation & Performance**:
+  - Optional `--local-ip` binding for multi-homed exit nodes;
+  - 16 MiB internal ring buffers for smooth packet streaming;
 - Pre-built Linux server binaries attached to GitHub releases;
 - DNS-over-HTTPS on Android;
-- desktop SOCKS5 client and Linux exit-node modes.
+- Desktop SOCKS5 client and Linux exit-node modes.
 
-> **MAX transport warning:** the MAX backend sends packets via WebRTC
-> DataChannel on your MAX account. Do not use a primary or important account;
-> running it from an external VPS may lead to account restrictions that
-> persist after OpenFlux stops. Treat MAX transport as experimental until its
-> detection and blocking behavior is better understood.
-
-## Important limitations
-
-OpenFlux is experimental research software, not an audited replacement for
-WireGuard or another mature VPN. The Android tunnel currently supports IPv4 and
-TCP. DNS is handled separately over HTTPS; arbitrary UDP and IPv6 are not
-tunneled. The document provider can still observe metadata such as connection
-times, traffic sizes and encrypted payloads. Anyone with document edit access
-can disrupt the connection.
-
-Use the software only on systems and networks you own or are authorized to
-test.
-
-## Requirements
-
-- Go 1.26.4 or newer for the desktop client and exit node;
-- a Linux VPS/VDS with root access for the exit node;
-- for Android builds: Java 17, Android SDK/API 35, Build Tools 35.0.0,
-  NDK 27.0.12077973, Gradle 8.14.3 and `gomobile`;
-- an editable document opened with the legacy Yandex Docs editor when using
-  the Yandex transport.
-
-## Prepare the private configuration
+---
 
 ## Quick start
 
-### 1. Prepare Yandex document
+### 1. Prepare Document
+
+#### Option A: Yandex Docs
 1. Create a document on [Yandex Disk](https://disk.yandex.ru/).
 2. Share access: **"Share" → "Anyone with link can edit"**.
 3. Copy the document URL.
+
+#### Option B: Mail.ru Docs
+1. Create a document on [Mail.ru Cloud](https://cloud.mail.ru/).
+2. Enable public editing link and copy the document URL.
 
 ### 2. Run on Linux VPS
 Download prebuilt binary from releases:
@@ -80,18 +69,41 @@ Download prebuilt binary from releases:
 wget https://github.com/Oleglog/OpenFlux-Android/releases/latest/download/openflux-linux-amd64 -O openflux
 chmod +x openflux
 
-# Drop RST packets:
+# Drop RST packets (required on Linux exit nodes):
 sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
-# Run in background via nohup:
+# Unencrypted mode (default):
 sudo nohup ./openflux --exit-node --url "YOUR_DOCUMENT_URL" > openflux.log 2>&1 &
+
+# Or with AES-256-GCM end-to-end encryption:
+sudo nohup ./openflux --exit-node --url "YOUR_DOCUMENT_URL" --encryption-key "YOUR_SECRET_KEY_MIN_16_CHARS" > openflux.log 2>&1 &
 ```
 *(View logs: `tail -f openflux.log`, stop: `sudo pkill -f openflux`)*.
 
 ### 3. Run on Android
 1. Download `OpenFlux-android-arm64-v8a-debug.apk` (or `universal`) from [Releases](https://github.com/Oleglog/OpenFlux-Android/releases/latest).
 2. Enter your document URL in **Settings**.
-3. Tap **Start VPN** on Home tab. The client auto-detects Volga vs classic engine.
+3. Tap **Start VPN** on Home tab. The client auto-detects the transport (Mail.ru vs Volga vs classic Yandex).
+
+---
+
+## Command-line flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--client` | off | Run the SOCKS5 client |
+| `--exit-node` | off | Run the exit node (requires root) |
+| `--socks5` | `:1080` | SOCKS5 listen address |
+| `--transport` | `yandex` | Transport backend (`yandex`, `mailru`, `oneme`) |
+| `--url` | empty | Inline document URL; prefer `--url-file` |
+| `--url-file` | empty | Read the document URL from a file |
+| `--encryption-key` | empty | Shared secret for AES-256-GCM authenticated encryption |
+| `--encryption-key-file` | empty | Read the encryption secret from a file |
+| `--codec` | `batched` | Packet codec: `legacy` (LZ4) or `batched` (zstd) |
+| `--local-ip` | empty | Specific local IP address for exit node outbound connections |
+| `--debug` | off | Enable verbose logging |
+
+---
 
 ## Build and install the Android app
 
@@ -105,54 +117,11 @@ gomobile init
 ./build_android_app.sh
 ```
 
-The build creates separate APKs for `arm64-v8a`, `armeabi-v7a`, `x86_64` and
-`x86`, plus `OpenFlux-android-universal-debug.apk` for devices whose architecture
-is unknown. Transfer the appropriate APK to an Android 8+ device, install it,
-enter your own document URL and shared secret in **Settings**, then approve
-Android's VPN prompt.
-
-Configuration survives a normal in-place app update when the application ID
-and signing certificate stay the same. Clearing app data or uninstalling the
-app removes it. APKs signed with a different certificate cannot update the
-existing installation. CI artifacts are debug builds; APKs attached to GitHub
-Releases use the project's persistent release certificate. Moving from a debug
-build to the release channel requires one uninstall and therefore clears saved
-settings.
-
 See [android/README.md](android/README.md) for Android-specific details.
 
-## Command-line flags
-
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--client` | off | Run the SOCKS5 client |
-| `--exit-node` | off | Run the exit node (requires root) |
-| `--socks5` | `:1080` | SOCKS5 listen address |
-| `--transport` | `yandex` | Transport backend (`yandex` or `oneme`) |
-| `--url` | empty | Inline document URL; prefer `--url-file` |
-| `--url-file` | empty | Read the document URL from a file |
-| `--encryption-key-file` | empty | Read the Yandex transport secret from a file |
-| `--maxToken` | empty | MAX transport token |
-| `--maxUid` | empty | MAX transport user ID |
-| `--debug` | off | Enable verbose logging |
-
-## Development and security
-
-Run checks before committing:
-
-```bash
-gofmt -w $(git ls-files '*.go')
-go test ./...
-go vet ./...
-git diff --check
-```
-
-Contributions are described in [CONTRIBUTING.md](CONTRIBUTING.md). Please read
-[SECURITY.md](SECURITY.md) before reporting a vulnerability. Changes are listed
-in [CHANGELOG.md](CHANGELOG.md).
+---
 
 ## License
 
-OpenFlux is licensed under the GNU General Public License v3.0 or later. See
-[LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT) and [NOTICE](NOTICE). This fork is not
-endorsed by or affiliated with Yandex.
+OpenFlux is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT) and [NOTICE](NOTICE). This project is not affiliated with or endorsed by Yandex or Mail.ru.
