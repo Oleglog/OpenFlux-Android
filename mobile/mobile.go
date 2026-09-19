@@ -7,16 +7,29 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"universal-bypass-tool/transport"
+	"universal-bypass-tool/transport/mailru"
 	"universal-bypass-tool/transport/yandex"
 	"universal-bypass-tool/utils"
 )
 
-var client = packetClient{}
+var (
+	client        = packetClient{}
+	encKeyMu      sync.Mutex
+	encryptionKey string
+)
+
+// SetEncryptionKey configures an optional AES-256-GCM transport key.
+func SetEncryptionKey(key string) {
+	encKeyMu.Lock()
+	defer encKeyMu.Unlock()
+	encryptionKey = strings.TrimSpace(key)
+}
 
 type packetClient struct {
 	mu        sync.Mutex
@@ -36,6 +49,10 @@ func appendLog(message string) {
 }
 
 func detectTransport(docURL string) string {
+	if strings.Contains(docURL, "mail.ru") {
+		return "mailru"
+	}
+
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -86,15 +103,47 @@ func Start(documentURL string) string {
 	detected := detectTransport(documentURL)
 
 	var innerTrans transport.Transport
-	if detected == "vyandex" {
+	switch detected {
+	case "mailru":
+		appendLog("[ANDROID] Запуск транспорта Mail.ru Docs")
+		innerTrans = mailru.NewMailruDocsTransport(documentURL, config)
+	case "vyandex":
 		appendLog("[ANDROID] Обнаружен редактор Volga. Запуск транспорта vyandex")
 		innerTrans = yandex.NewYandexVolgaTransport(documentURL, config)
-	} else {
+	default:
 		appendLog("[ANDROID] Запуск классического транспорта yandex")
 		innerTrans = yandex.NewYandexDocsTransport(documentURL, config)
 	}
 
-	trans := transport.NewCompressedTransport(innerTrans)
+	encKeyMu.Lock()
+	key := encryptionKey
+	encKeyMu.Unlock()
+	if envKey := os.Getenv("OPENFLUX_ENCRYPTION_KEY"); envKey != "" {
+		key = strings.TrimSpace(envKey)
+	} else if envKey := os.Getenv("OPENFLUX_KEY"); envKey != "" {
+		key = strings.TrimSpace(envKey)
+	}
+	if key != "" {
+		appendLog("[ANDROID] Включение сквозного шифрования AES-256-GCM")
+		encTrans, err := transport.NewEncryptedTransport(innerTrans, key, documentURL, false)
+		if err != nil {
+			appendLog(fmt.Sprintf("[ANDROID] Ошибка настройки шифрования: %v", err))
+			client.mu.Lock()
+			client.running = false
+			client.mu.Unlock()
+			return err.Error()
+		}
+		innerTrans = encTrans
+	}
+
+	var trans transport.Transport
+	if os.Getenv("OPENFLUX_CODEC") == "legacy" {
+		appendLog("[ANDROID] Использование legacy LZ4 кодека")
+		trans = transport.NewCompressedTransport(innerTrans)
+	} else {
+		appendLog("[ANDROID] Использование batched+zstd кодека")
+		trans = transport.NewBatchedTransport(innerTrans)
+	}
 	trans.Receive(func(data []byte) {
 		packet := append([]byte(nil), data...)
 		client.mu.Lock()

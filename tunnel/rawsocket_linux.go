@@ -38,12 +38,19 @@ func NewRawSocketEndpoint(nicID tcpip.NICID) (*RawSocketEndpoint, error) {
 		syscall.Close(sendFd)
 		return nil, fmt.Errorf("IP_HDRINCL: %v", err)
 	}
+	// Large send buffer: SOCK_RAW with IP_HDRINCL does not get kernel
+	// auto-tuning, so the default (208 KiB) caps BDP and causes drops
+	// at RTT ~100ms and >30 Mbps.
+	syscall.SetsockoptInt(sendFd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 16*1024*1024)
 
 	recvFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_TCP)
 	if err != nil {
 		syscall.Close(sendFd)
 		return nil, fmt.Errorf("recv socket failed: %v (need root)", err)
 	}
+	// Large receive buffer for the same reason: SOCK_RAW has no auto-tuning,
+	// and the default 208 KiB is not enough at ~100ms RTT for 30+ Mbps.
+	syscall.SetsockoptInt(recvFd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 16*1024*1024)
 
 	addr := &syscall.SockaddrInet4{
 		Addr: [4]byte{0, 0, 0, 0},
