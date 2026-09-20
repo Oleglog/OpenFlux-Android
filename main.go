@@ -45,7 +45,13 @@ func main() {
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
 	localIP := flag.String("local-ip", "", "Exit node egress IP (use a dedicated alias IP so the RST-drop rule can be scoped with -s)")
+	mode := flag.String("mode", "", "Exit-node mode: l4/proxy (default, reliable user-space forwarder) or l3 (kernel raw socket)")
 	flag.Parse()
+
+	exitMode, err := tunnel.ParseExitMode(*mode)
+	if err != nil {
+		log.Fatalf("--mode: %v", err)
+	}
 
 	if *localIP != "" {
 		tunnel.SetLocalIP(*localIP)
@@ -85,7 +91,11 @@ func main() {
 	}
 
 	log.Printf("=== Universal Bypass Tool ===")
-	log.Printf("Mode: %s", map[bool]string{true: "EXIT NODE", false: "CLIENT"}[*exitNode])
+	if *exitNode {
+		log.Printf("Mode: EXIT NODE (%s)", exitMode.String())
+	} else {
+		log.Printf("Mode: CLIENT")
+	}
 	log.Printf("Transport: %s (codec: %s)", *transportType, *codec)
 
 	config := transport.DefaultConfig()
@@ -157,22 +167,38 @@ func main() {
 		log.Fatalf("Failed to start transport: %v", err)
 	}
 
-	tun := tunnel.NewTCPTunnel(trans, *exitNode)
-
 	if *exitNode {
-		log.Printf("Running as EXIT NODE (needs root for raw socket)")
-		log.Printf("! Run: sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP")
-		if *localIP != "" {
-			log.Printf("! Run: sudo iptables -A OUTPUT -s %s -p tcp --tcp-flags RST RST -j DROP", *localIP)
+		runExit(trans, exitMode, *localIP)
+	} else {
+		runClient(trans, *socksAddr)
+	}
+}
+
+func runExit(trans transport.Transport, exitMode tunnel.ExitMode, localIP string) {
+	ex, err := tunnel.NewExitNode(trans, exitMode.String())
+	if err != nil {
+		log.Fatalf("exit node: %v", err)
+	}
+	log.Printf("Running as EXIT NODE (mode=%s)", ex.Mode())
+	if err := ex.Start(); err != nil {
+		log.Fatalf("exit start: %v", err)
+	}
+
+	if exitMode == tunnel.ExitModeL3 {
+		if localIP != "" {
+			log.Printf("! Run: sudo iptables -A OUTPUT -s %s -p tcp --tcp-flags RST RST -j DROP", localIP)
 		} else {
 			log.Printf("! Run: sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP")
 		}
-		select {}
-	} else {
-		log.Printf("Running as CLIENT (SOCKS5 on %s)", *socksAddr)
-		socks5Server := socks5.NewSOCKS5Server(*socksAddr, tun)
-		log.Fatal(socks5Server.Start())
 	}
+	select {}
+}
+
+func runClient(trans transport.Transport, socksAddr string) {
+	log.Printf("Running as CLIENT (SOCKS5 on %s)", socksAddr)
+	tun := tunnel.NewTCPTunnel(trans, false)
+	socks5Server := socks5.NewSOCKS5Server(socksAddr, tun)
+	log.Fatal(socks5Server.Start())
 }
 
 func readRequiredOption(value, filename, label string) (string, error) {

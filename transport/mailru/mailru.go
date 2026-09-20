@@ -240,13 +240,18 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		auth1 := fmt.Sprintf(`40{"token":"%s"}`, info.Token)
 		session.safeWrite(websocket.TextMessage, []byte(auth1))
 
+		effectiveUserID := info.EditorUserID
+		if effectiveUserID == "" {
+			effectiveUserID = userID
+		}
+
 		authMsg := map[string]interface{}{
 			"type":                "auth",
 			"docid":               info.DocKey,
 			"documentCallbackUrl": info.CallbackURL,
 			"token":               "fghhfgsjdgfjs",
 			"user": map[string]interface{}{
-				"id":        info.EditorUserID,
+				"id":        effectiveUserID,
 				"username":  userID,
 				"indexUser": -1,
 			},
@@ -259,7 +264,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			"openCmd": map[string]interface{}{
 				"c":               "open",
 				"id":              info.DocKey,
-				"userid":          info.EditorUserID,
+				"userid":          effectiveUserID,
 				"format":          info.FileType,
 				"url":             info.DocURL,
 				"title":           info.DocTitle,
