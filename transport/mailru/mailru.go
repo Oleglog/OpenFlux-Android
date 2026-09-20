@@ -527,16 +527,8 @@ func reconnectBackoff(n int) time.Duration {
 // fetchDocInfo POSTs to Mail.ru's public-document editor API and parses the
 // response into the fields needed to open the collaborative WebSocket.
 func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, error) {
-	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
 	client := &http.Client{
-		Transport: tr,
+		Transport: utils.GetSignalingHTTPTransport(),
 		Timeout:   15 * time.Second,
 	}
 

@@ -14,15 +14,83 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+var (
+	signalingProxyURL    *url.URL
+	signalingProxyDialer proxy.Dialer
+)
+
+// SetSignalingProxy explicitly sets a SOCKS5/HTTP proxy for transport signaling (HTTP & WebSocket).
+func SetSignalingProxy(proxyAddr string) error {
+	proxyAddr = strings.TrimSpace(proxyAddr)
+	if proxyAddr == "" {
+		signalingProxyURL = nil
+		signalingProxyDialer = nil
+		return nil
+	}
+	d, err := CreateSocks5Dialer(proxyAddr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("create signaling proxy dialer: %w", err)
+	}
+	if !strings.Contains(proxyAddr, "://") {
+		proxyAddr = "socks5://" + proxyAddr
+	}
+	u, _ := url.Parse(proxyAddr)
+	signalingProxyURL = u
+	signalingProxyDialer = d
+	log.Printf("[PROXY] Signaling proxy strictly enforced: %s", u.Redacted())
+	return nil
+}
+
+// GetSignalingHTTPTransport returns an http.Transport strictly using the signaling proxy if set,
+// or reading from the environment.
+func GetSignalingHTTPTransport() *http.Transport {
+	if signalingProxyDialer != nil {
+		return &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return signalingProxyDialer.Dial(network, addr)
+			},
+			TLSHandshakeTimeout: 10 * time.Second,
+			ForceAttemptHTTP2:   true,
+		}
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+}
+
 // ConfigureWebsocketDialerProxy configures proxy settings on a gorilla websocket.Dialer.
-// It checks environment variables (ALL_PROXY, HTTPS_PROXY, etc.) for targetURL.
-// For SOCKS5 proxies, Gorilla websocket does not natively support socks5 in dialProxy,
-// so this sets NetDialContext to dial via proxy.FromURL and sets Proxy to nil to prevent errors.
+// If an explicit signaling proxy was set via SetSignalingProxy, it strictly enforces it.
+// Otherwise it checks environment variables for targetURL.
 func ConfigureWebsocketDialerProxy(dialer *websocket.Dialer, targetURL string) {
 	if dialer == nil {
 		return
 	}
-	req, err := http.NewRequest("GET", targetURL, nil)
+	if signalingProxyDialer != nil {
+		dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return signalingProxyDialer.Dial(network, addr)
+		}
+		dialer.Proxy = func(r *http.Request) (*url.URL, error) {
+			return nil, nil // Strictly handled by NetDialContext
+		}
+		log.Printf("[PROXY] WebSocket strictly using signaling proxy: %s", signalingProxyURL.Redacted())
+		return
+	}
+
+	// Fallback to environment
+	httpURL := targetURL
+	if strings.HasPrefix(httpURL, "wss://") {
+		httpURL = "https://" + strings.TrimPrefix(httpURL, "wss://")
+	} else if strings.HasPrefix(httpURL, "ws://") {
+		httpURL = "http://" + strings.TrimPrefix(httpURL, "ws://")
+	}
+
+	req, err := http.NewRequest("GET", httpURL, nil)
 	if err != nil {
 		return
 	}

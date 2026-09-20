@@ -86,6 +86,9 @@ func main() {
 		}
 	}
 	if socksVal != "" {
+		if err := utils.SetSignalingProxy(socksVal); err != nil {
+			log.Fatalf("Configure socks-proxy: %v", err)
+		}
 		pURL := socksVal
 		if !strings.Contains(pURL, "://") {
 			pURL = "socks5://" + pURL
@@ -96,7 +99,6 @@ func main() {
 		os.Setenv("all_proxy", pURL)
 		os.Setenv("http_proxy", pURL)
 		os.Setenv("https_proxy", pURL)
-		log.Printf("Transport signaling proxy enabled: %s", pURL)
 	}
 
 	if *exitNode {

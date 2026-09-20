@@ -139,14 +139,14 @@ func authorize(docURL string) (*volgaAuth, error) {
 	utils.Debugf("[VOLGA] authorize(%s)", docURL)
 
 	jar, _ := cookiejar.New(nil)
+	tr := utils.GetSignalingHTTPTransport().Clone()
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = 100
+	tr.IdleConnTimeout = 90 * time.Second
 	session := &http.Client{
-		Jar: jar,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     90 * time.Second,
-		},
-		Timeout: 30 * time.Second,
+		Jar:       jar,
+		Transport: tr,
+		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -443,13 +443,11 @@ type relayClient struct {
 }
 
 func newRelayClient(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats) *relayClient {
-	tr := &http.Transport{
-		MaxIdleConns:        cfg.MaxIdleConns,
-		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
-		IdleConnTimeout:     cfg.IdleConnTimeout,
-		DisableCompression:  true,
-		ForceAttemptHTTP2:   true,
-	}
+	tr := utils.GetSignalingHTTPTransport().Clone()
+	tr.MaxIdleConns = cfg.MaxIdleConns
+	tr.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	tr.IdleConnTimeout = cfg.IdleConnTimeout
+	tr.DisableCompression = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 

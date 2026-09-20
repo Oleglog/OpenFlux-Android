@@ -400,6 +400,7 @@ func reconnectBackoff(n int) time.Duration {
 
 func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, error) {
 	client := &http.Client{
+		Transport: utils.GetSignalingHTTPTransport(),
 		// Cap redirects so an auth/login redirect loop fails fast instead of
 		// hanging until the timeout (a private doc redirects to passport).
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
