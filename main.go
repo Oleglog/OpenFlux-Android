@@ -45,8 +45,12 @@ func main() {
 	flag.StringVar(&maxToken, "maxToken", "", "MAX Web token. If u use MAX transport")
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
 	localIP := flag.String("local-ip", "", "Exit node egress IP (use a dedicated alias IP so the RST-drop rule can be scoped with -s)")
-	mode := flag.String("mode", "", "Exit-node mode: l4/proxy (default, reliable user-space forwarder) or l3 (kernel raw socket)")
+	mode := flag.String("mode", "l3", "Exit-node mode: l3 (default, kernel raw socket) or l4/proxy (user-space forwarder)")
 	flag.Parse()
+
+	if *mode == "" {
+		*mode = "l3"
+	}
 
 	exitMode, err := tunnel.ParseExitMode(*mode)
 	if err != nil {

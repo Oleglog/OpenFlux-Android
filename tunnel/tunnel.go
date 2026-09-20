@@ -40,13 +40,13 @@ func (m ExitMode) String() string {
 // ParseExitMode разбирает строку из флага --mode.
 func ParseExitMode(s string) (ExitMode, error) {
 	switch s {
-	case "", "l4", "proxy":
+	case "", "l3":
+		return ExitModeL3, nil
+	case "l4", "proxy":
 		// "proxy" is an alias kept for compatibility.
 		return ExitModeL4, nil
-	case "l3":
-		return ExitModeL3, nil
 	default:
-		return ExitModeL4, fmt.Errorf("unknown mode %q (want l3|l4)", s)
+		return ExitModeL3, fmt.Errorf("unknown mode %q (want l3|l4)", s)
 	}
 }
 
