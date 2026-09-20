@@ -46,6 +46,8 @@ func main() {
 	flag.StringVar(&maxUid, "maxUid", "", "MAX call user id. If u use MAX transport")
 	localIP := flag.String("local-ip", "", "Exit node egress IP (use a dedicated alias IP so the RST-drop rule can be scoped with -s)")
 	mode := flag.String("mode", "l4", "Exit-node mode: l4 (default, user-space forwarder) or l3 (kernel raw socket)")
+	warpProxy := flag.String("warp-proxy", "", "WARP/SOCKS5 proxy for client exit traffic in L4 mode (e.g. 127.0.0.1:40000 or user:pass@host:port)")
+	socksProxy := flag.String("socks-proxy", "", "SOCKS5/HTTP proxy for transport signaling (e.g. 127.0.0.1:40000 or user:pass@host:port)")
 	flag.Parse()
 
 	if *mode == "" {
@@ -59,6 +61,42 @@ func main() {
 
 	if *localIP != "" {
 		tunnel.SetLocalIP(*localIP)
+	}
+
+	warpVal := strings.TrimSpace(*warpProxy)
+	if warpVal == "" {
+		if env := os.Getenv("OLCRTC_WARP_PROXY"); env != "" {
+			warpVal = strings.TrimSpace(env)
+		} else if env := os.Getenv("WARP_PROXY"); env != "" {
+			warpVal = strings.TrimSpace(env)
+		}
+	}
+	if warpVal != "" {
+		if err := tunnel.SetWarpProxy(warpVal); err != nil {
+			log.Fatalf("Configure warp-proxy: %v", err)
+		}
+	}
+
+	socksVal := strings.TrimSpace(*socksProxy)
+	if socksVal == "" {
+		if env := os.Getenv("OLCRTC_SOCKS_PROXY"); env != "" {
+			socksVal = strings.TrimSpace(env)
+		} else if env := os.Getenv("SOCKS_PROXY"); env != "" {
+			socksVal = strings.TrimSpace(env)
+		}
+	}
+	if socksVal != "" {
+		pURL := socksVal
+		if !strings.Contains(pURL, "://") {
+			pURL = "socks5://" + pURL
+		}
+		os.Setenv("ALL_PROXY", pURL)
+		os.Setenv("HTTP_PROXY", pURL)
+		os.Setenv("HTTPS_PROXY", pURL)
+		os.Setenv("all_proxy", pURL)
+		os.Setenv("http_proxy", pURL)
+		os.Setenv("https_proxy", pURL)
+		log.Printf("Transport signaling proxy enabled: %s", pURL)
 	}
 
 	if *exitNode {

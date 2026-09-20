@@ -778,6 +778,7 @@ func (w *wsListener) connect() error {
 		ReadBufferSize:   4 << 20,
 		WriteBufferSize:  4 << 20,
 	}
+	utils.ConfigureWebsocketDialerProxy(&dialer, wsURL)
 
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {

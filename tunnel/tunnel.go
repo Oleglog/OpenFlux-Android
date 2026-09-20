@@ -16,10 +16,37 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"strings"
+
+	"golang.org/x/net/proxy"
+
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/tunnel/l3"
 	"universal-bypass-tool/utils"
 )
+
+var (
+	warpProxyAddr   string
+	warpProxyDialer proxy.Dialer
+)
+
+// SetWarpProxy sets the proxy for outgoing client TCP connections in L4 mode.
+func SetWarpProxy(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		warpProxyAddr = ""
+		warpProxyDialer = nil
+		return nil
+	}
+	d, err := utils.CreateSocks5Dialer(addr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("set warp proxy: %w", err)
+	}
+	warpProxyAddr = addr
+	warpProxyDialer = d
+	log.Printf("[TUNNEL] Exit node configured with WARP proxy: %s", addr)
+	return nil
+}
 
 // ExitMode выбирает, как выходная нода общается с интернетом.
 type ExitMode int
@@ -158,7 +185,13 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	local := gonet.NewTCPConn(&wq, ep)
 
 	utils.SafeGo("exit.flow", func() {
-		remote, err := net.DialTimeout("tcp", dest, 10*time.Second)
+		var remote net.Conn
+		var err error
+		if warpProxyDialer != nil {
+			remote, err = warpProxyDialer.Dial("tcp", dest)
+		} else {
+			remote, err = net.DialTimeout("tcp", dest, 10*time.Second)
+		}
 		if err != nil {
 			log.Printf("[EXIT] dial %s failed: %v", dest, err)
 			local.Close()

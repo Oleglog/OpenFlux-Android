@@ -196,6 +196,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 		}
+		utils.ConfigureWebsocketDialerProxy(&dialer, info.WsURL)
 		headers := http.Header{}
 		headers.Set("User-Agent", mailruUserAgent)
 		origin := "https://docs.datacloudmail.ru"
@@ -526,7 +527,18 @@ func reconnectBackoff(n int) time.Duration {
 // fetchDocInfo POSTs to Mail.ru's public-document editor API and parses the
 // response into the fields needed to open the collaborative WebSocket.
 func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   15 * time.Second,
+	}
 
 	clean := normalizeWeblink(weblink)
 	reqBody := map[string]string{
