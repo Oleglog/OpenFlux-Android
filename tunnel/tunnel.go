@@ -3,6 +3,7 @@ package tunnel
 import (
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync/atomic"
 	"time"
@@ -159,7 +160,7 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	utils.SafeGo("exit.flow", func() {
 		remote, err := net.DialTimeout("tcp", dest, 10*time.Second)
 		if err != nil {
-			utils.Debugf("[EXIT] dial %s failed: %v", dest, err)
+			log.Printf("[EXIT] dial %s failed: %v", dest, err)
 			local.Close()
 			return
 		}
@@ -168,7 +169,7 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 			_ = tc.SetReadBuffer(16 * 1024 * 1024)
 			_ = tc.SetWriteBuffer(16 * 1024 * 1024)
 		}
-		utils.Debugf("[EXIT] %s connected", dest)
+		log.Printf("[EXIT] %s connected", dest)
 
 		go func() {
 			buf := make([]byte, 256*1024)
