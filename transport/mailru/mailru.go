@@ -40,6 +40,7 @@ type MailruDocsInfo struct {
 	Permissions  map[string]interface{}
 	CallbackURL  string
 	EditorUserID string
+	ApiBase      string
 }
 
 type DocSession struct {
@@ -80,17 +81,38 @@ func NewMailruDocsTransport(weblink string, config transport.TransportConfig) *M
 
 func normalizeWeblink(weblink string) string {
 	weblink = strings.TrimSpace(weblink)
+	if idx := strings.IndexAny(weblink, "?#"); idx != -1 {
+		weblink = weblink[:idx]
+	}
+	weblink = strings.TrimRight(weblink, "/")
+
+	if idx := strings.Index(weblink, "/public/"); idx != -1 {
+		return strings.Trim(weblink[idx+len("/public/"):], "/")
+	}
+
 	for _, prefix := range []string{
 		"https://cloud.mail.ru/public/",
 		"http://cloud.mail.ru/public/",
+		"https://doc.mail.ru/public/",
+		"http://doc.mail.ru/public/",
+		"https://docs.mail.ru/public/",
+		"http://docs.mail.ru/public/",
+		"https://doc.mail.ru/d/",
+		"http://doc.mail.ru/d/",
+		"https://doc.mail.ru/",
+		"http://doc.mail.ru/",
+		"https://docs.mail.ru/",
+		"http://docs.mail.ru/",
 		"https://cloud.mail.ru/",
 		"http://cloud.mail.ru/",
+		"/public/",
+		"public/",
 	} {
 		if strings.HasPrefix(weblink, prefix) {
 			return strings.Trim(strings.TrimPrefix(weblink, prefix), "/")
 		}
 	}
-	return weblink
+	return strings.Trim(weblink, "/")
 }
 
 func (t *MailruDocsTransport) Start() error {
@@ -168,7 +190,11 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		}
 		headers := http.Header{}
 		headers.Set("User-Agent", mailruUserAgent)
-		headers.Set("Origin", "https://docs.datacloudmail.ru")
+		origin := "https://cloud.mail.ru"
+		if info.ApiBase != "" {
+			origin = info.ApiBase
+		}
+		headers.Set("Origin", origin)
 
 		utils.Debugf("[M-DOCS] WebSocket dial %s", info.WsURL)
 		conn, resp, err := dialer.Dial(info.WsURL, headers)
@@ -430,22 +456,23 @@ func reconnectBackoff(n int) time.Duration {
 func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 
+	clean := normalizeWeblink(weblink)
 	reqBody := map[string]string{
 		"x-email":  "anonym",
-		"public":   "/" + weblink,
+		"public":   "/" + clean,
 		"platform": "desktop_web",
 	}
 	jsonData, _ := json.Marshal(reqBody)
 
 	apiURL := "https://cloud.mail.ru/api/v4/r7/edit"
-	utils.Debugf("[M-DOCS] fetchDocInfo POST %s", apiURL)
+	utils.Debugf("[M-DOCS] fetchDocInfo POST %s (public: /%s)", apiURL, clean)
 
 	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("User-Agent", mailruUserAgent)
 	req.Header.Set("X-Api-Version", "4")
-	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", weblink, weblink))
+	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", clean, clean))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -453,11 +480,10 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return MailruDocsInfo{}, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
 	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return MailruDocsInfo{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
 
 	var res map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &res); err != nil {
@@ -469,7 +495,7 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 
 	document, ok := res["document"].(map[string]interface{})
 	if !ok || document == nil {
-		return MailruDocsInfo{}, fmt.Errorf("document object missing")
+		return MailruDocsInfo{}, fmt.Errorf("document object missing in response")
 	}
 
 	docKey, _ := document["key"].(string)
@@ -486,7 +512,7 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 
 	editorConfig, ok := res["editorConfig"].(map[string]interface{})
 	if !ok || editorConfig == nil {
-		return MailruDocsInfo{}, fmt.Errorf("editorConfig object missing")
+		return MailruDocsInfo{}, fmt.Errorf("editorConfig object missing in response")
 	}
 	callbackURL, _ := editorConfig["callbackUrl"].(string)
 
@@ -509,6 +535,7 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 		Permissions:  permissions,
 		CallbackURL:  callbackURL,
 		EditorUserID: editorUserID,
+		ApiBase:      apiBase,
 	}, nil
 }
 
