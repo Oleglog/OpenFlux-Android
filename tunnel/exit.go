@@ -17,14 +17,14 @@ type ExitNode interface {
 
 func NewExitNode(trans transport.Transport, mode string) (ExitNode, error) {
 	switch mode {
-	case "l3", "":
+	case "l3":
 		node, err := l3.New(trans)
 		if err != nil {
 			return nil, fmt.Errorf("l3: %w", err)
 		}
 		utils.Debugf("[EXIT] using L3 (platform=%s)", runtime.GOOS)
 		return node, nil
-	case "l4", "proxy":
+	case "l4", "proxy", "":
 		// "proxy" is an alias kept for compatibility.
 		return newProxyExit(trans), nil
 	default:
