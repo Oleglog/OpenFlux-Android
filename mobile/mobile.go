@@ -88,8 +88,15 @@ func Start(documentURL string) string {
 
 	client.mu.Lock()
 	if client.running {
+		prev := client.transport
+		client.running = false
+		client.transport = nil
+		client.packets = nil
 		client.mu.Unlock()
-		return ""
+		if prev != nil {
+			_ = prev.Stop()
+		}
+		client.mu.Lock()
 	}
 	client.running = true
 	client.packets = nil
