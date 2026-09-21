@@ -143,6 +143,7 @@ func authorize(docURL string) (*volgaAuth, error) {
 	tr.MaxIdleConns = 100
 	tr.MaxIdleConnsPerHost = 100
 	tr.IdleConnTimeout = 90 * time.Second
+	tr.ForceAttemptHTTP2 = true
 	session := &http.Client{
 		Jar:       jar,
 		Transport: tr,
@@ -448,6 +449,7 @@ func newRelayClient(auth *volgaAuth, cfg VolgaConfig, stats *VolgaStats) *relayC
 	tr.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
 	tr.IdleConnTimeout = cfg.IdleConnTimeout
 	tr.DisableCompression = true
+	tr.ForceAttemptHTTP2 = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 
