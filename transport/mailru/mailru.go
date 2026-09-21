@@ -136,15 +136,11 @@ func (t *MailruDocsTransport) Start() error {
 }
 
 func (t *MailruDocsTransport) Send(data []byte) error {
-	if !t.IsConnected() {
-		return fmt.Errorf("transport not connected")
-	}
-
 	t.Mu.RLock()
 	session := t.session
 	t.Mu.RUnlock()
 
-	if session == nil {
+	if session == nil || session.Conn == nil {
 		return fmt.Errorf("no active session")
 	}
 
@@ -327,6 +323,8 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			return
 		}
 		_ = conn.SetReadDeadline(time.Time{})
+		t.SetConnected(true)
+		log.Printf("[M-DOCS] Session authenticated and connected: user %s", peerUserID)
 
 		connectedAt := time.Now()
 		for t.IsRunning() {
@@ -444,6 +442,15 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 			log.Printf("[M-DOCS] Auth REJECTED: %s", text)
 			t.SetConnected(false)
 			return
+		}
+	}
+
+	if (strings.Contains(text, `"type":"documentOpen"`) && strings.Contains(text, `"status":"ok"`)) ||
+		strings.Contains(text, `"type":"waitAuth"`) ||
+		strings.Contains(text, `"type":"license"`) {
+		if !t.IsConnected() {
+			log.Printf("[M-DOCS] Document session active: user %s", session.UserID)
+			t.SetConnected(true)
 		}
 	}
 

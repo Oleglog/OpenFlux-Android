@@ -27,6 +27,18 @@ func (c *CompressedTransport) Send(data []byte) error {
 
 func (c *CompressedTransport) Receive(callback func([]byte)) {
 	c.Transport.Receive(func(data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		if data[0] == batchFormatVersion {
+			pkts, err := decodeBatch(data)
+			if err == nil {
+				for _, p := range pkts {
+					callback(p)
+				}
+				return
+			}
+		}
 		decompressed, err := decompress(data)
 		if err != nil {
 			callback(data) // fallback

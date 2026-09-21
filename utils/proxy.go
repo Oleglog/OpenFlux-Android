@@ -50,7 +50,6 @@ func GetSignalingHTTPTransport() *http.Transport {
 				return signalingProxyDialer.Dial(network, addr)
 			},
 			TLSHandshakeTimeout: 10 * time.Second,
-			ForceAttemptHTTP2:   true,
 		}
 	}
 	return &http.Transport{
@@ -60,7 +59,6 @@ func GetSignalingHTTPTransport() *http.Transport {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
-		ForceAttemptHTTP2:   true,
 	}
 }
 

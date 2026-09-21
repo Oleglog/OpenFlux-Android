@@ -37,7 +37,7 @@ func main() {
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
 	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, mailru)")
-	codec := flag.String("codec", "legacy", "Codec: legacy (default, per-packet LZ4) or batched (zstd+coalescing)")
+	codec := flag.String("codec", "batched", "Codec: batched (default, zstd+coalescing) or legacy (per-packet LZ4)")
 	flag.StringVar(&globalDocUrl, "url", "", "Document URL. Required for Yandex/Mailru Docs transport")
 	urlFile := flag.String("url-file", "", "Read the document URL from a file")
 	encryptionKey := flag.String("encryption-key", "", "Optional: AES-256-GCM transport encryption key")
@@ -99,6 +99,14 @@ func main() {
 		os.Setenv("all_proxy", pURL)
 		os.Setenv("http_proxy", pURL)
 		os.Setenv("https_proxy", pURL)
+	}
+
+	if codecEnv := strings.TrimSpace(os.Getenv("OLCRTC_OPENFLUX_CODEC")); codecEnv != "" {
+		*codec = codecEnv
+	} else if codecEnv := strings.TrimSpace(os.Getenv("OLCRTC_CODEC")); codecEnv != "" {
+		*codec = codecEnv
+	} else if codecEnv := strings.TrimSpace(os.Getenv("OPENFLUX_CODEC")); codecEnv != "" {
+		*codec = codecEnv
 	}
 
 	if *exitNode {
