@@ -15,6 +15,8 @@ import (
 	_ "github.com/wlynxg/anet"
 	"universal-bypass-tool/socks5"
 	"universal-bypass-tool/transport"
+	"universal-bypass-tool/transport/avito"
+	"universal-bypass-tool/transport/cupsonline"
 	"universal-bypass-tool/transport/mailru"
 	"universal-bypass-tool/transport/oneme"
 	"universal-bypass-tool/transport/yandex"
@@ -170,6 +172,15 @@ func main() {
 		if strings.Contains(globalDocUrl, "mail.ru") {
 			log.Printf("[INFO] Detected Mail.ru document URL, switching to mailru transport")
 			inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
+		} else if strings.Contains(globalDocUrl, "avito.ru") {
+			log.Printf("[INFO] Detected Avito URL, switching to avito transport")
+			inner = avito.NewAvitoTransport(globalDocUrl, config, "", !*exitNode)
+		} else if strings.Contains(globalDocUrl, "cups.online") {
+			log.Printf("[INFO] Detected Cups.online URL, switching to cupsonline transport")
+			inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
+		} else if strings.Contains(globalDocUrl, "telemost.yandex.ru") {
+			log.Printf("[INFO] Detected Telemost conference URL, switching to telemost transport")
+			inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
 		} else if isVolgaDoc(globalDocUrl) {
 			log.Printf("[INFO] Detected Volga editor document, switching to vyandex transport")
 			inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
@@ -183,6 +194,27 @@ func main() {
 			log.Fatal(err)
 		}
 		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
+	case "avito":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/code URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = avito.NewAvitoTransport(globalDocUrl, config, "", !*exitNode)
+	case "cupsonline", "cups":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/interview URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
+	case "telemost":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Telemost room URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
 	case "oneme":
 		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
 		inner = oneme.NewOneMeTransport(*exitNode, maxToken, uidint, config)

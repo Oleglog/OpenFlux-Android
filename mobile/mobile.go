@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"universal-bypass-tool/transport"
+	"universal-bypass-tool/transport/avito"
+	"universal-bypass-tool/transport/cupsonline"
 	"universal-bypass-tool/transport/mailru"
 	"universal-bypass-tool/transport/yandex"
 	"universal-bypass-tool/utils"
@@ -51,6 +53,15 @@ func appendLog(message string) {
 func detectTransport(docURL string) string {
 	if strings.Contains(docURL, "mail.ru") {
 		return "mailru"
+	}
+	if strings.Contains(docURL, "avito.ru") {
+		return "avito"
+	}
+	if strings.Contains(docURL, "cups.online") {
+		return "cupsonline"
+	}
+	if strings.Contains(docURL, "telemost.yandex.ru") {
+		return "telemost"
 	}
 
 	httpClient := &http.Client{
@@ -114,6 +125,15 @@ func Start(documentURL string) string {
 	case "mailru":
 		appendLog("[ANDROID] Запуск транспорта Mail.ru Docs")
 		innerTrans = mailru.NewMailruDocsTransport(documentURL, config)
+	case "avito":
+		appendLog("[ANDROID] Обнаружен сервис Avito. Запуск транспорта avito")
+		innerTrans = avito.NewAvitoTransport(documentURL, config, "", true)
+	case "cupsonline":
+		appendLog("[ANDROID] Обнаружен сервис Cups.online. Запуск транспорта cupsonline")
+		innerTrans = cupsonline.NewCupsonlineTransport(documentURL, config, true)
+	case "telemost":
+		appendLog("[ANDROID] Обнаружена конференция Telemost. Запуск транспорта telemost")
+		innerTrans = yandex.NewTelemostTransport("", documentURL, false, config)
 	case "vyandex":
 		appendLog("[ANDROID] Обнаружен редактор Volga. Запуск транспорта vyandex")
 		innerTrans = yandex.NewYandexVolgaTransport(documentURL, config)
