@@ -58,6 +58,8 @@ export ANDROID_SDK_ROOT="$SDK_ROOT"
 export ANDROID_NDK_HOME="$NDK_ROOT"
 export PATH="$(dirname -- "$GOMOBILE_BIN"):$PATH"
 
+export GOFLAGS="-ldflags=-checklinkname=0"
+
 (
     cd "$SCRIPT_DIR/mobile"
     go mod tidy
@@ -65,6 +67,7 @@ export PATH="$(dirname -- "$GOMOBILE_BIN"):$PATH"
         -target=android \
         -androidapi=26 \
         -javapkg=io.openflux.bridge \
+        -ldflags="-checklinkname=0" \
         -o ../android/app/libs/openflux.aar \
         .
 )
