@@ -60,6 +60,7 @@ export PATH="$(dirname -- "$GOMOBILE_BIN"):$PATH"
 
 (
     cd "$SCRIPT_DIR/mobile"
+    go mod tidy
     "$GOMOBILE_BIN" bind \
         -target=android \
         -androidapi=26 \
