@@ -198,17 +198,21 @@ func main() {
 		}
 		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
 	case "avito":
-		var err error
-		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/code URL")
-		if err != nil {
-			log.Fatal(err)
+		if !*exitNode {
+			var err error
+			globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/code URL")
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 		inner = avito.NewAvitoTransport(globalDocUrl, config, "", !*exitNode)
 	case "cupsonline", "cups":
-		var err error
-		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/interview URL")
-		if err != nil {
-			log.Fatal(err)
+		if !*exitNode {
+			var err error
+			globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "room/interview URL")
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
 	case "telemost":

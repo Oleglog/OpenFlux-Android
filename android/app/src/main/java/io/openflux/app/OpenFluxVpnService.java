@@ -143,7 +143,7 @@ public final class OpenFluxVpnService extends VpnService {
                 byte[] packet = Arrays.copyOf(buffer, length);
                 if (isIpv4UdpDns(packet)) {
                     workers.execute(() -> forwardDns(session, outputFor(session), packet, dnsServer));
-                } else if (isIpv4Tcp(packet)) {
+                } else if (isIpv4Tcp(packet) || isIpv4Udp(packet)) {
                     String error = Mobile.send(packet);
                     if (error != null && !error.isEmpty() && isCurrent(session)) {
                         lastError = "Отправка пакета: " + error;
@@ -179,66 +179,31 @@ public final class OpenFluxVpnService extends VpnService {
         if (dnsOffset > request.length || udpLength < 8 || ipHeader + udpLength > request.length) return;
 
         byte[] query = Arrays.copyOfRange(request, dnsOffset, ipHeader + udpLength);
-        try {
-            byte[] answer = queryDnsOverHttps(query, dnsServer);
-            inject(session, output, buildDnsResponse(request, answer));
-        } catch (Exception exception) {
-            if (isCurrent(session)) lastError = "DNS: " + exception.getMessage();
+        byte[] answer = queryDnsUdp(query, dnsServer);
+        if (answer != null && answer.length > 0) {
+            try {
+                inject(session, output, buildDnsResponse(request, answer));
+                return;
+            } catch (IOException ignored) {}
         }
+        // Fallback to exit node UDP NAT
+        Mobile.send(request);
     }
 
-    private byte[] queryDnsOverHttps(byte[] query, String dnsServer) throws IOException {
-        java.util.List<String> endpoints = new java.util.ArrayList<>();
-        if ("77.88.8.8".equals(dnsServer) || "77.88.8.1".equals(dnsServer)) {
-            endpoints.add("https://common.dot.yandex.net/dns-query");
-            endpoints.add("https://dns.google/dns-query");
-        } else if ("8.8.8.8".equals(dnsServer) || "8.8.4.4".equals(dnsServer)) {
-            endpoints.add("https://dns.google/dns-query");
-            endpoints.add("https://common.dot.yandex.net/dns-query");
-        } else if ("9.9.9.9".equals(dnsServer) || "149.112.112.112".equals(dnsServer)) {
-            endpoints.add("https://dns.9.9.9.9/dns-query");
-            endpoints.add("https://common.dot.yandex.net/dns-query");
-        } else {
-            // Default 1.1.1.1 is blocked in Russia; prioritize Yandex DoH then fallback to others
-            endpoints.add("https://common.dot.yandex.net/dns-query");
-            endpoints.add("https://dns.google/dns-query");
-            endpoints.add("https://cloudflare-dns.com/dns-query");
+    private byte[] queryDnsUdp(byte[] query, String dnsServer) {
+        String targetIp = (dnsServer != null && !dnsServer.trim().isEmpty()) ? dnsServer.trim() : "77.88.8.8";
+        try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
+            protect(socket);
+            socket.setSoTimeout(2500);
+            java.net.InetAddress addr = java.net.InetAddress.getByName(targetIp);
+            socket.send(new java.net.DatagramPacket(query, query.length, addr, 53));
+            byte[] buffer = new byte[4096];
+            java.net.DatagramPacket response = new java.net.DatagramPacket(buffer, buffer.length);
+            socket.receive(response);
+            return Arrays.copyOf(buffer, response.getLength());
+        } catch (Exception e) {
+            return null;
         }
-
-        IOException lastErr = null;
-        for (String endpoint : endpoints) {
-            HttpURLConnection connection = null;
-            try {
-                connection = (HttpURLConnection) new URL(endpoint).openConnection();
-                connection.setConnectTimeout(3000);
-                connection.setReadTimeout(3000);
-                connection.setRequestMethod("POST");
-                connection.setRequestProperty("Accept", "application/dns-message");
-                connection.setRequestProperty("Content-Type", "application/dns-message");
-                connection.setDoOutput(true);
-                connection.setFixedLengthStreamingMode(query.length);
-                connection.getOutputStream().write(query);
-                int statusCode = connection.getResponseCode();
-                if (statusCode != HttpURLConnection.HTTP_OK) {
-                    throw new IOException("DoH вернул HTTP " + statusCode + " от " + endpoint);
-                }
-                try (java.io.InputStream input = connection.getInputStream();
-                     java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-                    byte[] buffer = new byte[2048];
-                    int read;
-                    while ((read = input.read(buffer)) != -1) {
-                        output.write(buffer, 0, read);
-                        if (output.size() > 65535) throw new IOException("DNS-ответ превышает 64 КБ");
-                    }
-                    return output.toByteArray();
-                }
-            } catch (IOException e) {
-                lastErr = e;
-            } finally {
-                if (connection != null) connection.disconnect();
-            }
-        }
-        throw lastErr != null ? lastErr : new IOException("Все DoH-эндпоинты недоступны");
     }
 
 
