@@ -14,6 +14,7 @@ import (
 
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/transport/avito"
+	"universal-bypass-tool/transport/bitrix24"
 	"universal-bypass-tool/transport/cupsonline"
 	"universal-bypass-tool/transport/mailru"
 	"universal-bypass-tool/transport/yandex"
@@ -62,6 +63,14 @@ func detectTransport(docURL string) string {
 	}
 	if strings.Contains(docURL, "telemost.yandex.ru") {
 		return "telemost"
+	}
+	if strings.Contains(docURL, "bitrix24") {
+		return "bitrix24"
+	}
+
+	// Volga is ONLY supported on /edit/d/ documents
+	if !strings.Contains(docURL, "/edit/d/") {
+		return "yandex"
 	}
 
 	httpClient := &http.Client{
@@ -134,6 +143,9 @@ func Start(documentURL string) string {
 	case "telemost":
 		appendLog("[ANDROID] Обнаружена конференция Telemost. Запуск транспорта telemost")
 		innerTrans = yandex.NewTelemostTransport("", documentURL, false, config)
+	case "bitrix24":
+		appendLog("[ANDROID] Обнаружен сервис Bitrix24. Запуск транспорта bitrix24")
+		innerTrans = bitrix24.NewBitrix24Transport(documentURL, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 	case "vyandex":
 		appendLog("[ANDROID] Обнаружен редактор Volga. Запуск транспорта vyandex")
 		innerTrans = yandex.NewYandexVolgaTransport(documentURL, config)

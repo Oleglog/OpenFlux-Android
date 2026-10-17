@@ -738,6 +738,35 @@ func (t *YandexDocsTransport) ApplyCookies(values map[string]string) error {
 	return nil
 }
 
+// LoadCookieFile imports a Netscape cookies.txt (yandex.ru cookies)
+// into the transport's cookie jar, so it opens the document signed in.
+func (t *YandexDocsTransport) LoadCookieFile(path string) error {
+	t.jarMu.Lock()
+	if t.cookieJar == nil {
+		jar, _ := cookiejar.New(nil)
+		t.cookieJar = jar
+	}
+	jar := t.cookieJar
+	t.jarMu.Unlock()
+
+	if err := loadYandexCookies(path, jar); err != nil {
+		return err
+	}
+	utils.Debugf("[YDOCS] cookie file loaded from %s", path)
+	if t.IsConnected() && t.IsRunning() {
+		t.Mu.Lock()
+		session := t.session
+		t.session = nil
+		t.SetConnected(false)
+		t.Mu.Unlock()
+		if session != nil && session.Conn != nil {
+			_ = session.Conn.Close()
+		}
+		t.scheduleReconnect(0)
+	}
+	return nil
+}
+
 // ---- fetchDocInfo ----
 
 func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, error) {
@@ -797,18 +826,9 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 				return YandexDocsInfo{}, fmt.Errorf("redirect without Location from %s", currentURL)
 			}
 
-			// Second-tier captcha (SmartCaptcha, showcaptcha?cc=1). The PoW
-			// solver cannot handle it; signal the caller to fetch fresh
-			// cookies out of band.
-			if strings.Contains(loc, "showcaptcha") && !strings.Contains(loc, "showcaptchafast") {
-				utils.Debugf("[YDOCS] SmartCaptcha detected, external solver required")
-				return YandexDocsInfo{}, ErrCaptchaRequired
-			}
-
-			// First-tier captcha (PoW, showcaptchafast). Solve and retry
-			// the original url.
-			if strings.Contains(loc, "showcaptchafast") {
-				utils.Debugf("[YDOCS] captcha detected, solving...")
+			// SmartCaptcha or PoW captcha (showcaptcha or showcaptchafast)
+			if strings.Contains(loc, "showcaptcha") || strings.Contains(loc, "showcaptchafast") {
+				utils.Debugf("[YDOCS] captcha detected (%s), solving...", loc)
 				if _, cerr := solveCaptcha(currentURL, jar, ua); cerr != nil {
 					return YandexDocsInfo{}, fmt.Errorf("captcha solve: %w", cerr)
 				}
@@ -843,8 +863,27 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 
 	htmlBytes, _ := io.ReadAll(resp.Body)
 	html := string(htmlBytes)
+	finalURL := resp.Request.URL.String()
 	utils.Debugf("[YDOCS] response status=%d finalURL=%s body=%dB",
-		resp.StatusCode, resp.Request.URL.String(), len(html))
+		resp.StatusCode, finalURL, len(html))
+
+	// Check if 200 OK is actually a SmartCaptcha page
+	if strings.Contains(finalURL, "showcaptcha") || (strings.Contains(html, "window.__SSR_DATA__") && strings.Contains(html, "powComplexity")) {
+		utils.Infof("[YDOCS] SmartCaptcha PoW challenge detected on 200 OK, solving...")
+		if _, cerr := solveCaptcha(finalURL, jar, ua); cerr != nil {
+			return YandexDocsInfo{}, fmt.Errorf("auth: solve SmartCaptcha on 200: %w", cerr)
+		}
+		utils.Infof("[YDOCS] SmartCaptcha solved successfully, retrying document load...")
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("User-Agent", ua)
+		resp, err = client.Do(req)
+		if err != nil {
+			return YandexDocsInfo{}, fmt.Errorf("reload after captcha: %w", err)
+		}
+		defer resp.Body.Close()
+		htmlBytes, _ = io.ReadAll(resp.Body)
+		html = string(htmlBytes)
+	}
 
 	var cookies []string
 	for _, c := range resp.Cookies() {

@@ -16,6 +16,7 @@ import (
 	"universal-bypass-tool/socks5"
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/transport/avito"
+	"universal-bypass-tool/transport/bitrix24"
 	"universal-bypass-tool/transport/cupsonline"
 	"universal-bypass-tool/transport/mailru"
 	"universal-bypass-tool/transport/oneme"
@@ -183,12 +184,22 @@ func main() {
 		} else if strings.Contains(globalDocUrl, "telemost.yandex.ru") {
 			log.Printf("[INFO] Detected Telemost conference URL, switching to telemost transport")
 			inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
+		} else if strings.Contains(globalDocUrl, "bitrix24") {
+			log.Printf("[INFO] Detected Bitrix24 URL, switching to bitrix24 transport")
+			inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 		} else if isVolgaDoc(globalDocUrl) {
 			log.Printf("[INFO] Detected Volga editor document, switching to vyandex transport")
 			inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
 		} else {
 			inner = yandex.NewYandexDocsTransport(globalDocUrl, config)
 		}
+	case "vyandex", "volga":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Volga document URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
 	case "mailru":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")
@@ -217,6 +228,13 @@ func main() {
 			log.Fatal(err)
 		}
 		inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
+	case "bitrix24", "b24":
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Bitrix24 portal URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 	case "oneme":
 		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
 		inner = oneme.NewOneMeTransport(*exitNode, maxToken, uidint, config)
@@ -334,6 +352,10 @@ func readRequiredOption(value, filename, label string) (string, error) {
 }
 
 func isVolgaDoc(docURL string) bool {
+	// Volga editor is ONLY supported for /edit/d/ documents
+	if !strings.Contains(docURL, "/edit/d/") {
+		return false
+	}
 	client := &http.Client{
 		Transport: utils.GetSignalingHTTPTransport(),
 		Timeout:   10 * time.Second,
