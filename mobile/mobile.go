@@ -121,7 +121,7 @@ func Start(documentURL string) string {
 		innerTrans = bitrix24.NewBitrix24Transport(documentURL, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 	case "vyandex":
 		appendLog("[ANDROID] Обнаружен редактор Volga. Запуск транспорта vyandex")
-		innerTrans = yandex.NewYandexVolgaTransport(documentURL, config)
+		innerTrans = yandex.NewYandexVolgaTransportWithConfig(documentURL, config, yandex.SlimVolgaConfig())
 	default:
 		appendLog("[ANDROID] Запуск классического транспорта yandex")
 		innerTrans = yandex.NewYandexDocsTransport(documentURL, config)
