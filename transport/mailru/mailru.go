@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -26,7 +25,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"universal-bypass-tool/netbind"
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/utils"
 )
@@ -1303,14 +1301,6 @@ func (t *MailruDocsTransport) ApplyCookies(values map[string]string) error {
 		t.scheduleReconnect(0)
 	}
 	return nil
-}
-
-// network is the network this carrier dials through (TransportConfig.Network).
-func (t *MailruDocsTransport) network() string {
-	if t.BaseTransport == nil {
-		return ""
-	}
-	return t.GetConfig().Network
 }
 
 // LoadCookieFile imports a Netscape cookies.txt (mail.ru cookies)

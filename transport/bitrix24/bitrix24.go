@@ -143,6 +143,7 @@ func (t *Bitrix24Transport) Stats() transport.TransportStats {
 		PacketsRecv:   t.pktsRecv.Load(),
 		Reconnects:    t.reconnects.Load(),
 		Connected:     t.IsConnected(),
+		Uptime:        t.BaseTransport.Uptime(),
 	}
 }
 
