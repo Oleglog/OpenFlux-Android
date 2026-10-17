@@ -136,15 +136,14 @@ func (t *Bitrix24Transport) Send(data []byte) error {
 }
 
 func (t *Bitrix24Transport) Stats() transport.TransportStats {
-	return transport.TransportStats{
-		BytesSent:     t.bytesSent.Load(),
-		BytesReceived: t.bytesRecv.Load(),
-		PacketsSent:   t.pktsSent.Load(),
-		PacketsRecv:   t.pktsRecv.Load(),
-		Reconnects:    t.reconnects.Load(),
-		Connected:     t.IsConnected(),
-		Uptime:        t.BaseTransport.Uptime(),
-	}
+	s := t.BaseTransport.Stats()
+	s.BytesSent = t.bytesSent.Load()
+	s.BytesReceived = t.bytesRecv.Load()
+	s.PacketsSent = t.pktsSent.Load()
+	s.PacketsRecv = t.pktsRecv.Load()
+	s.Reconnects = t.reconnects.Load()
+	s.Connected = t.IsConnected()
+	return s
 }
 
 func (t *Bitrix24Transport) PreferredBatchBytes() int {
