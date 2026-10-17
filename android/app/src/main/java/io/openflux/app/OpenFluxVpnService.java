@@ -227,6 +227,10 @@ public final class OpenFluxVpnService extends VpnService {
         return packet.length >= 20 && (packet[0] >>> 4) == 4 && (packet[9] & 0xff) == 6;
     }
 
+    private static boolean isIpv4Udp(byte[] packet) {
+        return packet.length >= 28 && (packet[0] >>> 4) == 4 && (packet[9] & 0xff) == 17;
+    }
+
     private static boolean isIpv4UdpDns(byte[] packet) {
         if (packet.length < 28 || (packet[0] >>> 4) != 4 || (packet[9] & 0xff) != 17) return false;
         int header = (packet[0] & 0x0f) * 4;
