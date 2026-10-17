@@ -162,12 +162,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if !isVolgaDoc(globalDocUrl) {
-			log.Printf("[WARN] %s transport requested, but URL %s is not a Volga /edit/d/ document. Falling back to classic Yandex transport.", *transportType, globalDocUrl)
-			inner = yandex.NewYandexDocsTransport(globalDocUrl, config)
-		} else {
-			inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
-		}
+		inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
 	case "yandex":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")

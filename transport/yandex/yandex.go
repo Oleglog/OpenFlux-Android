@@ -32,6 +32,11 @@ var ErrCaptchaRequired = errors.New("yandex docs: captcha required")
 // document is not public from this IP / account.
 var ErrLoginRequired = errors.New("yandex docs: login required")
 
+// ErrVolgaDetected signals that the document is served by the Volga editor
+// rather than classic ONLYOFFICE (officeActionData.balancer_url missing, action_url present).
+var ErrVolgaDetected = errors.New("yandex docs: volga editor document detected")
+
+
 // Precompiled once. cursorPayloadRe in particular runs on every inbound
 // message, so compiling it per call (as before) was pure overhead on the hot
 // receive path.
@@ -212,6 +217,11 @@ type YandexDocsTransport struct {
 	// replaced under a live connection, and two reconnects open two sessions to
 	// the document (a second participant that stays).
 	reconnecting atomic.Bool
+
+	// volgaDelegate is initialized when a Volga document is detected, routing
+	// all traffic transparently through Volga without failing.
+	volgaDelegate *YandexVolgaTransport
+	volgaMu       sync.RWMutex
 }
 
 func NewYandexDocsTransport(url string, config transport.TransportConfig) *YandexDocsTransport {
@@ -245,6 +255,12 @@ func (t *YandexDocsTransport) Start() error {
 // is gone.
 func (t *YandexDocsTransport) Stop() error {
 	err := t.BaseTransport.Stop()
+	t.volgaMu.RLock()
+	vd := t.volgaDelegate
+	t.volgaMu.RUnlock()
+	if vd != nil {
+		_ = vd.Stop()
+	}
 	t.Mu.RLock()
 	session := t.session
 	t.Mu.RUnlock()
@@ -254,7 +270,34 @@ func (t *YandexDocsTransport) Stop() error {
 	return err
 }
 
+func (t *YandexDocsTransport) IsConnected() bool {
+	t.volgaMu.RLock()
+	vd := t.volgaDelegate
+	t.volgaMu.RUnlock()
+	if vd != nil {
+		return vd.IsConnected()
+	}
+	return t.BaseTransport.IsConnected()
+}
+
+func (t *YandexDocsTransport) Stats() transport.TransportStats {
+	t.volgaMu.RLock()
+	vd := t.volgaDelegate
+	t.volgaMu.RUnlock()
+	if vd != nil {
+		return vd.Stats()
+	}
+	return t.BaseTransport.Stats()
+}
+
 func (t *YandexDocsTransport) Send(data []byte) error {
+	t.volgaMu.RLock()
+	vd := t.volgaDelegate
+	t.volgaMu.RUnlock()
+	if vd != nil {
+		return vd.Send(data)
+	}
+
 	if !t.IsConnected() {
 		return fmt.Errorf("transport not connected")
 	}
@@ -275,6 +318,17 @@ func (t *YandexDocsTransport) Send(data []byte) error {
 		return fmt.Errorf("write queue full")
 	}
 }
+
+func (t *YandexDocsTransport) Receive(callback func([]byte)) {
+	t.BaseTransport.Receive(callback)
+	t.volgaMu.RLock()
+	vd := t.volgaDelegate
+	t.volgaMu.RUnlock()
+	if vd != nil {
+		vd.Receive(callback)
+	}
+}
+
 
 func (t *YandexDocsTransport) connectToDoc(attempt int) {
 	if !t.IsRunning() {
@@ -303,6 +357,23 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 
 		info, err := t.fetchDocInfo(t.url, userID)
 		if err != nil {
+			if errors.Is(err, ErrVolgaDetected) {
+				utils.Infof("[YDOCS] Document is a Volga document (balancer_url missing, action_url present). Auto-delegating to Yandex Volga transport...")
+				t.volgaMu.Lock()
+				if t.volgaDelegate == nil {
+					vt := NewYandexVolgaTransport(t.url, t.GetConfig())
+					vt.Receive(t.CallReceive)
+					t.volgaDelegate = vt
+					t.volgaMu.Unlock()
+					if err := vt.Start(); err != nil {
+						utils.Debugf("[YDOCS] Volga delegate Start failed: %v", err)
+						t.scheduleReconnect(attempt)
+					}
+				} else {
+					t.volgaMu.Unlock()
+				}
+				return
+			}
 			if errors.Is(err, ErrCaptchaRequired) || errors.Is(err, ErrLoginRequired) {
 				utils.Debugf("[YDOCS] fetchDocInfo needs external help: %v", err)
 				reason := "smartcaptcha"
@@ -913,14 +984,25 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 		return YandexDocsInfo{}, fmt.Errorf("officeActionData missing - will reconnect")
 	}
 
+	// If balancer_url is absent or Volga action_url is present, this is a Volga document
+	if actionURL, hasAction := officeAction["action_url"].(string); hasAction && actionURL != "" {
+		return YandexDocsInfo{}, ErrVolgaDetected
+	}
+	if _, hasEditor := officeAction["editor_type"]; hasEditor {
+		return YandexDocsInfo{}, ErrVolgaDetected
+	}
+	if strings.Contains(html, "volga") && !strings.Contains(html, "balancer_url") {
+		return YandexDocsInfo{}, ErrVolgaDetected
+	}
+
 	editorConfigRaw, ok := officeAction["editor_config"].(map[string]interface{})
 	if !ok || editorConfigRaw == nil {
-		return YandexDocsInfo{}, fmt.Errorf("editor_config nil - will reconnect")
+		return YandexDocsInfo{}, ErrVolgaDetected
 	}
 
 	balancerURL, ok := officeAction["balancer_url"].(string)
 	if !ok || balancerURL == "" {
-		return YandexDocsInfo{}, fmt.Errorf("officeActionData.balancer_url missing - will reconnect")
+		return YandexDocsInfo{}, ErrVolgaDetected
 	}
 	host := strings.TrimPrefix(balancerURL, "https://")
 
