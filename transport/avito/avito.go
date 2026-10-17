@@ -93,7 +93,11 @@ func createRoom(ctx context.Context, cookies string) (string, error) {
 	u, _ := url.Parse(baseURL)
 	parseCookiesInto(jar, u, cookies)
 
-	client := &http.Client{Jar: jar, Timeout: 30 * time.Second}
+	client := &http.Client{
+		Jar:       jar,
+		Transport: utils.GetSignalingHTTPTransport(),
+		Timeout:   30 * time.Second,
+	}
 	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/web/1/code/room", bytes.NewReader(nil))
 	req.Header.Set("User-Agent", avitoUA)
 	req.Header.Set("Origin", baseURL)
@@ -187,6 +191,7 @@ func (w *avitoWS) dial() (*websocket.Conn, error) {
 		ReadBufferSize:   w.config.ReadBufferSize,
 		WriteBufferSize:  w.config.WriteBufferSize,
 	}
+	utils.ConfigureWebsocketDialerProxy(&dialer, wsURL)
 	conn, _, err := dialer.DialContext(w.ctx, wsURL, header)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)

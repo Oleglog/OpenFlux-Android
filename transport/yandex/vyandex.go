@@ -179,15 +179,14 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 	if jar == nil {
 		jar, _ = cookiejar.New(nil)
 	}
+	tr := carrierTransport().Clone()
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = 100
+	tr.IdleConnTimeout = 90 * time.Second
 	session := &http.Client{
-		Jar: jar,
-		Transport: &http.Transport{
-			DialContext:         dialIPv4First,
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     90 * time.Second,
-		},
-		Timeout: 30 * time.Second,
+		Jar:       jar,
+		Transport: tr,
+		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -216,6 +215,23 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 		utils.Debugf("[VOLGA] GET %s -> %d (%d bytes)", currentURL, resp.StatusCode, len(body))
 
 		if resp.StatusCode == 200 {
+			isCaptcha := resp.Header.Get("x-yandex-captcha") == "captcha" ||
+				bytes.Contains(body, []byte("window.__SSR_DATA__")) ||
+				bytes.Contains(body, []byte("checkbox-captcha-form")) ||
+				bytes.Contains(body, []byte("tmgrdfrend-form")) ||
+				bytes.Contains(body, []byte("Вы не робот?"))
+
+			if isCaptcha {
+				utils.Debugf("[VOLGA] captcha HTML detected in 200 OK from %s, solving...", currentURL)
+				nextURL, cerr := solveCaptchaHTML(string(body), currentURL, jar, volgaUserAgent)
+				if cerr != nil {
+					return nil, fmt.Errorf("captcha solve 200 OK: %w", cerr)
+				}
+				utils.Debugf("[VOLGA] captcha solved, redirecting to %s", nextURL)
+				currentURL = nextURL
+				continue
+			}
+
 			finalBody = body
 			finalURL = currentURL
 			break
@@ -227,23 +243,23 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 				return nil, fmt.Errorf("redirect without Location from %s", currentURL)
 			}
 
-			// Second-tier captcha (SmartCaptcha): cannot be solved with PoW.
-			if strings.Contains(loc, "showcaptcha") && !strings.Contains(loc, "showcaptchafast") {
-				utils.Debugf("[VOLGA] SmartCaptcha detected, external solver required")
-				return nil, ErrCaptchaRequired
-			}
-
 			if strings.Contains(loc, "passport.yandex") {
 				return nil, ErrLoginRequired
 			}
 
-			if strings.Contains(loc, "showcaptchafast") {
-				utils.Debugf("[VOLGA] captcha required, solving...")
-				if _, cerr := solveCaptcha(docURL, jar, volgaUserAgent); cerr != nil {
+			if strings.Contains(loc, "showcaptcha") || strings.Contains(loc, "showcaptchafast") {
+				utils.Debugf("[VOLGA] captcha required at %s, solving...", loc)
+				targetCaptchaURL := loc
+				if strings.HasPrefix(targetCaptchaURL, "/") {
+					u, _ := url.Parse(currentURL)
+					targetCaptchaURL = u.Scheme + "://" + u.Host + targetCaptchaURL
+				}
+				nextURL, cerr := solveCaptcha(targetCaptchaURL, jar, volgaUserAgent)
+				if cerr != nil {
 					return nil, fmt.Errorf("captcha solve: %w", cerr)
 				}
-				utils.Debugf("[VOLGA] captcha solved, retrying from %s", docURL)
-				currentURL = docURL
+				utils.Debugf("[VOLGA] captcha solved, retrying from %s", nextURL)
+				currentURL = nextURL
 				continue
 			}
 
@@ -542,14 +558,12 @@ type relayClient struct {
 }
 
 func newRelayClient(auth *atomic.Pointer[volgaAuth], cfg VolgaConfig, stats *VolgaStats) *relayClient {
-	tr := &http.Transport{
-		DialContext:         dialIPv4First,
-		MaxIdleConns:        cfg.MaxIdleConns,
-		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
-		IdleConnTimeout:     cfg.IdleConnTimeout,
-		DisableCompression:  true,
-		ForceAttemptHTTP2:   true,
-	}
+	tr := carrierTransport().Clone()
+	tr.MaxIdleConns = cfg.MaxIdleConns
+	tr.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	tr.IdleConnTimeout = cfg.IdleConnTimeout
+	tr.DisableCompression = true
+	tr.ForceAttemptHTTP2 = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -969,6 +983,7 @@ func (w *wsListener) connect() error {
 		ReadBufferSize:   w.config.WSReadBufferSize,
 		WriteBufferSize:  w.config.WSWriteBufferSize,
 	}
+	utils.ConfigureWebsocketDialerProxy(&dialer, wsURL)
 
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {

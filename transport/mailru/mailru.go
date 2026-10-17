@@ -285,6 +285,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 		}
+		utils.ConfigureWebsocketDialerProxy(&dialer, info.WsURL)
 		headers := http.Header{}
 		headers.Set("User-Agent", mailruUserAgent)
 		// Some Mail.ru edge nodes still answer 409 to the upgrade when the
@@ -636,7 +637,11 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 			return MailruDocsInfo{}, err
 		}
 	}
-	client := &http.Client{Jar: jar, Timeout: 15 * time.Second}
+	client := &http.Client{
+		Jar:       jar,
+		Transport: utils.GetSignalingHTTPTransport(),
+		Timeout:   15 * time.Second,
+	}
 
 	reqBody := map[string]string{
 		"x-email":  "anonym",
@@ -663,7 +668,15 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return MailruDocsInfo{}, fmt.Errorf("API returned status %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodySnippet := string(bodyBytes)
+		if len(bodySnippet) > 500 {
+			bodySnippet = bodySnippet[:500]
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return MailruDocsInfo{}, fmt.Errorf("API returned status %d (%s) - document may require authentication or cookies", resp.StatusCode, bodySnippet)
+		}
+		return MailruDocsInfo{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, bodySnippet)
 	}
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
@@ -773,6 +786,35 @@ func (t *MailruDocsTransport) ApplyCookies(values map[string]string) error {
 		_ = session.Conn.Close()
 	}
 	if t.IsRunning() {
+		t.scheduleReconnect(0)
+	}
+	return nil
+}
+
+// LoadCookieFile imports a Netscape cookies.txt (mail.ru cookies)
+// into the transport's cookie jar, so it opens the document signed in.
+func (t *MailruDocsTransport) LoadCookieFile(path string) error {
+	t.jarMu.Lock()
+	if t.cookieJar == nil {
+		jar, _ := cookiejar.New(nil)
+		t.cookieJar = jar
+	}
+	jar := t.cookieJar
+	t.jarMu.Unlock()
+
+	if err := loadMailruCookies(path, jar); err != nil {
+		return err
+	}
+	utils.Debugf("[M-DOCS] cookie file loaded from %s", path)
+	if t.IsConnected() && t.IsRunning() {
+		t.Mu.Lock()
+		session := t.session
+		t.session = nil
+		t.SetConnected(false)
+		t.Mu.Unlock()
+		if session != nil && session.Conn != nil {
+			_ = session.Conn.Close()
+		}
 		t.scheduleReconnect(0)
 	}
 	return nil

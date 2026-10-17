@@ -33,8 +33,12 @@ const carrierDialTimeout = 10 * time.Second
 var lookupIPAddr = net.DefaultResolver.LookupIPAddr
 
 // dialIPv4First is a DialContext that tries a host's IPv4 addresses before its
-// IPv6 ones. It follows the interface binding of package netbind.
+// IPv6 ones. It follows the interface binding of package netbind, or the
+// configured signaling proxy when set.
 func dialIPv4First(ctx context.Context, network, address string) (net.Conn, error) {
+	if d := utils.GetSignalingProxyDialer(); d != nil {
+		return d.Dial(network, address)
+	}
 	if network != "tcp" {
 		return netbind.DialContext(ctx, network, address)
 	}
@@ -73,8 +77,11 @@ func dialIPv4First(ctx context.Context, network, address string) (net.Conn, erro
 	return nil, firstErr
 }
 
-// carrierTransport is the default HTTP transport dialing through dialIPv4First.
+// carrierTransport is the default HTTP transport dialing through dialIPv4First or the signaling proxy.
 func carrierTransport() *http.Transport {
+	if utils.HasSignalingProxy() {
+		return utils.GetSignalingHTTPTransport().Clone()
+	}
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		t := dt.Clone()
 		t.DialContext = dialIPv4First

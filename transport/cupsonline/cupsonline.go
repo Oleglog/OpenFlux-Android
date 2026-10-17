@@ -171,8 +171,9 @@ func authorize(ctx context.Context, roomURL string, session *http.Client) (*cups
 	if client == nil {
 		jar, _ := cookiejar.New(nil)
 		client = &http.Client{
-			Jar:     jar,
-			Timeout: 30 * time.Second,
+			Jar:       jar,
+			Transport: utils.GetSignalingHTTPTransport(),
+			Timeout:   30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
@@ -735,6 +736,7 @@ func (w *cupsWS) connectAndServe() error {
 		ReadBufferSize:   w.config.ReadBufferSize,
 		WriteBufferSize:  w.config.WriteBufferSize,
 	}
+	utils.ConfigureWebsocketDialerProxy(&dialer, wsURL)
 	conn, _, err := dialer.DialContext(w.ctx, wsURL, header)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)

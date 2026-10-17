@@ -41,6 +41,16 @@ func SetSignalingProxy(proxyAddr string) error {
 	return nil
 }
 
+// HasSignalingProxy reports whether an explicit signaling proxy is configured.
+func HasSignalingProxy() bool {
+	return signalingProxyDialer != nil
+}
+
+// GetSignalingProxyDialer returns the proxy dialer if configured.
+func GetSignalingProxyDialer() proxy.Dialer {
+	return signalingProxyDialer
+}
+
 // GetSignalingHTTPTransport returns an http.Transport strictly using the signaling proxy if set,
 // or reading from the environment.
 func GetSignalingHTTPTransport() *http.Transport {
@@ -49,16 +59,17 @@ func GetSignalingHTTPTransport() *http.Transport {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return signalingProxyDialer.Dial(network, addr)
 			},
-			TLSHandshakeTimeout: 10 * time.Second,
+			TLSHandshakeTimeout: 15 * time.Second,
+			ForceAttemptHTTP2:   true,
 		}
 	}
 	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
+			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout: 15 * time.Second,
 		ForceAttemptHTTP2:   true,
 	}
 }

@@ -312,7 +312,10 @@ func (t *TelemostTransport) Stop() error {
 }
 
 func (t *TelemostTransport) getConnectionInfo() error {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{
+		Transport: utils.GetSignalingHTTPTransport(),
+		Timeout:   15 * time.Second,
+	}
 	var apiURL, method string
 	if t.conferenceURL != "" {
 		encodedURL := url.QueryEscape(t.conferenceURL)

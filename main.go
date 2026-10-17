@@ -50,6 +50,8 @@ func main() {
 	mode := flag.String("mode", "l4", "Exit-node mode: l4 (default, user-space forwarder) or l3 (kernel raw socket)")
 	warpProxy := flag.String("warp-proxy", "", "WARP/SOCKS5 proxy for client exit traffic in L4 mode (e.g. 127.0.0.1:40000 or user:pass@host:port)")
 	socksProxy := flag.String("socks-proxy", "", "SOCKS5/HTTP proxy for transport signaling (e.g. 127.0.0.1:40000 or user:pass@host:port)")
+	cookiesFile := flag.String("cookies", "", "Optional: Netscape cookies.txt file (for Yandex Volga or Mail.ru)")
+	cookiesFileAlias := flag.String("cookies-file", "", "Optional: alias for --cookies")
 	flag.Parse()
 
 	if *mode == "" {
@@ -222,6 +224,34 @@ func main() {
 		log.Fatalf("Unknown transport type: %s", *transportType)
 	}
 
+	cookiePath := strings.TrimSpace(*cookiesFile)
+	if cookiePath == "" {
+		cookiePath = strings.TrimSpace(*cookiesFileAlias)
+	}
+	if cookiePath == "" {
+		if env := os.Getenv("OLCRTC_COOKIES_FILE"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		} else if env := os.Getenv("OLCRTC_COOKIES"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		} else if env := os.Getenv("OPENFLUX_COOKIES"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		}
+	}
+	if cookiePath != "" {
+		type cookieLoader interface {
+			LoadCookieFile(string) error
+		}
+		if cl, ok := inner.(cookieLoader); ok {
+			log.Printf("[INFO] Loading cookies from %s...", cookiePath)
+			if err := cl.LoadCookieFile(cookiePath); err != nil {
+				log.Fatalf("Failed to load cookie file %s: %v", cookiePath, err)
+			}
+			log.Printf("[INFO] Cookies loaded successfully from %s", cookiePath)
+		} else {
+			log.Printf("[WARN] Transport %s does not support loading cookie files", *transportType)
+		}
+	}
+
 	if secret != "" {
 		context := *transportType
 		if globalDocUrl != "" {
@@ -305,7 +335,8 @@ func readRequiredOption(value, filename, label string) (string, error) {
 
 func isVolgaDoc(docURL string) bool {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Transport: utils.GetSignalingHTTPTransport(),
+		Timeout:   10 * time.Second,
 	}
 	req, err := http.NewRequest("GET", docURL, nil)
 	if err != nil {

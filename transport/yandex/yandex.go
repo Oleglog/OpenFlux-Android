@@ -330,6 +330,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 			HandshakeTimeout: 15 * time.Second,
 			NetDialContext:   dialIPv4First,
 		}
+		utils.ConfigureWebsocketDialerProxy(&dialer, info.WsURL)
 		headers := http.Header{}
 		headers.Set("User-Agent", "Mozilla/5.0")
 		headers.Set("Origin", info.Origin)
