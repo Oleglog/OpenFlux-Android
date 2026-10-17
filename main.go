@@ -3,14 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	godebug "runtime/debug"
 	"strconv"
 	"strings"
-	"time"
 
 	_ "github.com/wlynxg/anet"
 	"universal-bypass-tool/socks5"

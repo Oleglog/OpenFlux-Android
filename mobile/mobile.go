@@ -5,12 +5,9 @@ package mobile
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/transport/avito"
