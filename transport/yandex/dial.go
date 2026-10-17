@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"universal-bypass-tool/netbind"
+	"universal-bypass-tool/utils"
 )
 
 // The tunnel itself is IPv4: the L3 exit's raw sockets, the client's gVisor
