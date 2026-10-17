@@ -159,7 +159,7 @@ func main() {
 	var inner transport.Transport
 
 	switch *transportType {
-	case "vyandex":
+	case "vyandex", "volga":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")
 		if err != nil {
@@ -193,13 +193,6 @@ func main() {
 		} else {
 			inner = yandex.NewYandexDocsTransport(globalDocUrl, config)
 		}
-	case "vyandex", "volga":
-		var err error
-		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Volga document URL")
-		if err != nil {
-			log.Fatal(err)
-		}
-		inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
 	case "mailru":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "document URL")
