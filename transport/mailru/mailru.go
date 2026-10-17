@@ -1136,6 +1136,71 @@ func reconnectBackoff(n int) time.Duration {
 	return d
 }
 
+func fetchMailruCSRFToken(client *http.Client, weblink string) string {
+	// 1. Try GET https://cloud.mail.ru/api/v2/tokens/csrf
+	req, err := http.NewRequest("GET", "https://cloud.mail.ru/api/v2/tokens/csrf", nil)
+	if err == nil {
+		req.Header.Set("User-Agent", mailruUserAgent)
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s", weblink))
+		if resp, err := client.Do(req); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == 200 {
+				var data struct {
+					Body struct {
+						Token string `json:"token"`
+					} `json:"body"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&data) == nil && data.Body.Token != "" {
+					return data.Body.Token
+				}
+			}
+		}
+	}
+
+	// 2. Try POST https://cloud.mail.ru/api/v2/tokens/csrf
+	reqPost, err := http.NewRequest("POST", "https://cloud.mail.ru/api/v2/tokens/csrf", nil)
+	if err == nil {
+		reqPost.Header.Set("User-Agent", mailruUserAgent)
+		reqPost.Header.Set("Accept", "application/json, text/plain, */*")
+		reqPost.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s", weblink))
+		if resp, err := client.Do(reqPost); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == 200 {
+				var data struct {
+					Body struct {
+						Token string `json:"token"`
+					} `json:"body"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&data) == nil && data.Body.Token != "" {
+					return data.Body.Token
+				}
+			}
+		}
+	}
+
+	// 3. Fallback: GET public page HTML and extract tokens.csrf
+	pageURL := fmt.Sprintf("https://cloud.mail.ru/public/%s", weblink)
+	reqPage, err := http.NewRequest("GET", pageURL, nil)
+	if err == nil {
+		reqPage.Header.Set("User-Agent", mailruUserAgent)
+		reqPage.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		if resp, err := client.Do(reqPage); err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+			re := regexp.MustCompile(`"tokens"\s*:\s*\{\s*"csrf"\s*:\s*"([^"]+)"`)
+			if m := re.FindSubmatch(body); len(m) > 1 && len(m[1]) > 0 {
+				return string(m[1])
+			}
+			reAlt := regexp.MustCompile(`"csrf"\s*:\s*"([^"]+)"`)
+			if m := reAlt.FindSubmatch(body); len(m) > 1 && len(m[1]) > 0 {
+				return string(m[1])
+			}
+		}
+	}
+	return ""
+}
+
 // fetchDocInfo POSTs to Mail.ru's public-document editor API and parses the
 // response into the fields needed to open the collaborative WebSocket.
 func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, error) {
@@ -1155,14 +1220,25 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 		Timeout:   15 * time.Second,
 	}
 
+	csrfToken := fetchMailruCSRFToken(client, weblink)
+	if csrfToken != "" {
+		utils.Debugf("[M-DOCS] obtained Mail.ru CSRF token (%d bytes)", len(csrfToken))
+	}
+
 	reqBody := map[string]string{
 		"x-email":  "anonym",
 		"public":   "/" + weblink,
 		"platform": "desktop_web",
 	}
+	if csrfToken != "" {
+		reqBody["token"] = csrfToken
+	}
 	jsonData, _ := json.Marshal(reqBody)
 
 	apiURL := "https://cloud.mail.ru/api/v4/r7/edit"
+	if csrfToken != "" {
+		apiURL = fmt.Sprintf("https://cloud.mail.ru/api/v4/r7/edit?token=%s", url.QueryEscape(csrfToken))
+	}
 	utils.Debugf("[M-DOCS] fetchDocInfo POST %s", apiURL)
 
 	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
@@ -1172,8 +1248,20 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	req.Header.Set("User-Agent", mailruUserAgent)
 	req.Header.Set("X-Api-Version", "4")
 	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", weblink, weblink))
+	if csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", csrfToken)
+	}
 
 	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode != http.StatusOK && csrfToken != "" {
+		// Retry without "x-email": "anonym" for authenticated requests
+		resp.Body.Close()
+		delete(reqBody, "x-email")
+		jsonDataRetry, _ := json.Marshal(reqBody)
+		reqRetry, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonDataRetry))
+		reqRetry.Header = req.Header.Clone()
+		resp, err = client.Do(reqRetry)
+	}
 	if err != nil {
 		return MailruDocsInfo{}, err
 	}
