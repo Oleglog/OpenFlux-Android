@@ -25,8 +25,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/openlibrecommunity/olcrtc/mobilecore/openflux/transport"
-	"github.com/openlibrecommunity/olcrtc/mobilecore/openflux/utils"
+	"universal-bypass-tool/transport"
+	"universal-bypass-tool/utils"
 )
 
 // Mail.ru rejects the old Chrome/137 UA on the WebSocket upgrade with HTTP 409
