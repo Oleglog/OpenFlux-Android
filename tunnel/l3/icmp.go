@@ -3,7 +3,6 @@ package l3
 import (
 	"encoding/binary"
 	"errors"
-	"universal-bypass-tool/transport"
 	"sync/atomic"
 	"time"
 )
@@ -110,12 +109,20 @@ func makeTooBig(original []byte, source [4]byte, mtu int) []byte {
 	return p
 }
 
+type peerParameters struct {
+	MaxPacketSize int
+}
+
+type peerParameterProvider interface {
+	PeerParameters() (peerParameters, bool)
+}
+
 // Respect the negotiated receive limit on the return path as well. Feedback
 // to an Internet sender must quote the packet BEFORE reverse NAT, otherwise
 // its socket cannot associate the error with the actual flow.
 func (t *L3Exit) sendClient(p, wire []byte) error {
-	if n, ok := t.trans.(transport.PeerParameterProvider); ok {
-		if limits, ready := n.PeerParameters(); ready && len(p) > limits.MaxPacketSize {
+	if n, ok := t.trans.(peerParameterProvider); ok {
+		if limits, ready := n.PeerParameters(); ready && limits.MaxPacketSize > 0 && len(p) > limits.MaxPacketSize {
 			if p[6]&0x40 != 0 {
 				feedback := makeTooBig(wire, t.backend.EgressIP(), limits.MaxPacketSize)
 				if feedback != nil {

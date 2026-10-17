@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/p1neappleXpress/OpenFlux/utils"
+	"universal-bypass-tool/utils"
 )
 
 // PacketDirection is the arrow shown before the packet summary.
