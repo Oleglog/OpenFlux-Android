@@ -188,52 +188,60 @@ public final class OpenFluxVpnService extends VpnService {
     }
 
     private byte[] queryDnsOverHttps(byte[] query, String dnsServer) throws IOException {
-        String endpoint;
-        switch (dnsServer) {
-            case "8.8.8.8":
-            case "8.8.4.4":
-                endpoint = "https://dns.google/dns-query";
-                break;
-            case "9.9.9.9":
-            case "149.112.112.112":
-                endpoint = "https://dns.9.9.9.9/dns-query";
-                break;
-            case "1.1.1.1":
-            case "1.0.0.1":
-                endpoint = "https://cloudflare-dns.com/dns-query";
-                break;
-            default:
-                throw new IOException("поддерживаются DNS 1.1.1.1, 8.8.8.8 и 9.9.9.9");
+        java.util.List<String> endpoints = new java.util.ArrayList<>();
+        if ("77.88.8.8".equals(dnsServer) || "77.88.8.1".equals(dnsServer)) {
+            endpoints.add("https://common.dot.yandex.net/dns-query");
+            endpoints.add("https://dns.google/dns-query");
+        } else if ("8.8.8.8".equals(dnsServer) || "8.8.4.4".equals(dnsServer)) {
+            endpoints.add("https://dns.google/dns-query");
+            endpoints.add("https://common.dot.yandex.net/dns-query");
+        } else if ("9.9.9.9".equals(dnsServer) || "149.112.112.112".equals(dnsServer)) {
+            endpoints.add("https://dns.9.9.9.9/dns-query");
+            endpoints.add("https://common.dot.yandex.net/dns-query");
+        } else {
+            // Default 1.1.1.1 is blocked in Russia; prioritize Yandex DoH then fallback to others
+            endpoints.add("https://common.dot.yandex.net/dns-query");
+            endpoints.add("https://dns.google/dns-query");
+            endpoints.add("https://cloudflare-dns.com/dns-query");
         }
 
-        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
-        connection.setConnectTimeout(5000);
-        connection.setReadTimeout(5000);
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Accept", "application/dns-message");
-        connection.setRequestProperty("Content-Type", "application/dns-message");
-        connection.setDoOutput(true);
-        connection.setFixedLengthStreamingMode(query.length);
-        try {
-            connection.getOutputStream().write(query);
-            int statusCode = connection.getResponseCode();
-            if (statusCode != HttpURLConnection.HTTP_OK) {
-                throw new IOException("DoH вернул HTTP " + statusCode);
-            }
-            try (java.io.InputStream input = connection.getInputStream();
-                 java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-                byte[] buffer = new byte[2048];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, read);
-                    if (output.size() > 65535) throw new IOException("слишком большой DNS-ответ");
+        IOException lastErr = null;
+        for (String endpoint : endpoints) {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(endpoint).openConnection();
+                connection.setConnectTimeout(3000);
+                connection.setReadTimeout(3000);
+                connection.setRequestMethod("POST");
+                connection.setRequestProperty("Accept", "application/dns-message");
+                connection.setRequestProperty("Content-Type", "application/dns-message");
+                connection.setDoOutput(true);
+                connection.setFixedLengthStreamingMode(query.length);
+                connection.getOutputStream().write(query);
+                int statusCode = connection.getResponseCode();
+                if (statusCode != HttpURLConnection.HTTP_OK) {
+                    throw new IOException("DoH вернул HTTP " + statusCode + " от " + endpoint);
                 }
-                return output.toByteArray();
+                try (java.io.InputStream input = connection.getInputStream();
+                     java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[2048];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                        if (output.size() > 65535) throw new IOException("DNS-ответ превышает 64 КБ");
+                    }
+                    return output.toByteArray();
+                }
+            } catch (IOException e) {
+                lastErr = e;
+            } finally {
+                if (connection != null) connection.disconnect();
             }
-        } finally {
-            connection.disconnect();
         }
+        throw lastErr != null ? lastErr : new IOException("Все DoH-эндпоинты недоступны");
     }
+
+
 
     private void inject(int session, FileOutputStream output, byte[] packet) throws IOException {
         if (!isCurrent(session) || output == null || packet == null) return;
