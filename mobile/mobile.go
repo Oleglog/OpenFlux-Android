@@ -68,32 +68,8 @@ func detectTransport(docURL string) string {
 		return "bitrix24"
 	}
 
-	// Volga is ONLY supported on /edit/d/ documents
-	if !strings.Contains(docURL, "/edit/d/") {
-		return "yandex"
-	}
-
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	req, err := http.NewRequest("GET", docURL, nil)
-	if err != nil {
-		return "yandex"
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "yandex"
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return "yandex"
-	}
-
-	content := string(body)
-	if strings.Contains(content, `"officeType":"volga"`) || (strings.Contains(content, "volga") && !strings.Contains(content, "balancer_url")) {
+	// Volga is strictly used on /edit/d/ documents
+	if strings.Contains(docURL, "/edit/d/") {
 		return "vyandex"
 	}
 	return "yandex"

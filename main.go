@@ -260,9 +260,10 @@ func main() {
 		if cl, ok := inner.(cookieLoader); ok {
 			log.Printf("[INFO] Loading cookies from %s...", cookiePath)
 			if err := cl.LoadCookieFile(cookiePath); err != nil {
-				log.Fatalf("Failed to load cookie file %s: %v", cookiePath, err)
+				log.Printf("[WARN] Cookie file %s: %v (continuing without cookies)", cookiePath, err)
+			} else {
+				log.Printf("[INFO] Cookies loaded successfully from %s", cookiePath)
 			}
-			log.Printf("[INFO] Cookies loaded successfully from %s", cookiePath)
 		} else {
 			log.Printf("[WARN] Transport %s does not support loading cookie files", *transportType)
 		}
@@ -350,30 +351,6 @@ func readRequiredOption(value, filename, label string) (string, error) {
 }
 
 func isVolgaDoc(docURL string) bool {
-	// Volga editor is ONLY supported for /edit/d/ documents
-	if !strings.Contains(docURL, "/edit/d/") {
-		return false
-	}
-	client := &http.Client{
-		Transport: utils.GetSignalingHTTPTransport(),
-		Timeout:   10 * time.Second,
-	}
-	req, err := http.NewRequest("GET", docURL, nil)
-	if err != nil {
-		return false
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return false
-	}
-
-	content := string(body)
-	return strings.Contains(content, `"officeType":"volga"`) || (strings.Contains(content, "volga") && !strings.Contains(content, "balancer_url"))
+	// Volga editor is strictly used for /edit/d/ documents
+	return strings.Contains(docURL, "/edit/d/")
 }
