@@ -196,13 +196,13 @@ func main() {
 			inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
 		} else if strings.Contains(globalDocUrl, "avito.ru") {
 			log.Printf("[INFO] Detected Avito URL, switching to avito transport")
-			inner = avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode)
+			inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode))
 		} else if strings.Contains(globalDocUrl, "cups.online") {
 			log.Printf("[INFO] Detected Cups.online URL, switching to cupsonline transport")
-			inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
+			inner = transport.NewStripedRoomTransport(cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode))
 		} else if strings.Contains(globalDocUrl, "telemost.yandex.ru") {
 			log.Printf("[INFO] Detected Telemost conference URL, switching to telemost transport")
-			inner = yandex.NewTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
+			inner = yandex.NewStripedTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
 		} else if strings.Contains(globalDocUrl, "bitrix24") {
 			log.Printf("[INFO] Detected Bitrix24 URL, switching to bitrix24 transport")
 			inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, b24cookies, os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
@@ -227,7 +227,7 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		inner = avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode)
+		inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode))
 	case "cupsonline", "cups":
 		if !*exitNode {
 			var err error
@@ -236,14 +236,14 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
+		inner = transport.NewStripedRoomTransport(cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode))
 	case "telemost":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Telemost room URL")
 		if err != nil {
 			log.Fatal(err)
 		}
-		inner = yandex.NewTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
+		inner = yandex.NewStripedTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
 	case "bitrix24", "b24":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Bitrix24 portal URL")

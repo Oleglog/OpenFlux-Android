@@ -109,13 +109,13 @@ func Start(documentURL string) string {
 		innerTrans = mailru.NewMailruDocsTransport(documentURL, config)
 	case "avito":
 		appendLog("[ANDROID] Обнаружен сервис Avito. Запуск транспорта avito")
-		innerTrans = avito.NewAvitoTransport(documentURL, config, "", true)
+		innerTrans = transport.NewStripedRoomTransport(avito.NewAvitoTransport(documentURL, config, "", true))
 	case "cupsonline":
 		appendLog("[ANDROID] Обнаружен сервис Cups.online. Запуск транспорта cupsonline")
-		innerTrans = cupsonline.NewCupsonlineTransport(documentURL, config, true)
+		innerTrans = transport.NewStripedRoomTransport(cupsonline.NewCupsonlineTransport(documentURL, config, true))
 	case "telemost":
 		appendLog("[ANDROID] Обнаружена конференция Telemost. Запуск транспорта telemost")
-		innerTrans = yandex.NewTelemostTransport("", documentURL, false, config)
+		innerTrans = yandex.NewStripedTelemostTransport("", documentURL, false, config)
 	case "bitrix24":
 		appendLog("[ANDROID] Обнаружен сервис Bitrix24. Запуск транспорта bitrix24")
 		innerTrans = bitrix24.NewBitrix24Transport(documentURL, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
