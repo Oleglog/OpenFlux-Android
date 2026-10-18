@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -172,7 +173,7 @@ func (t *TCPTunnel) setupExitNodeProxy(tunnelNIC tcpip.NICID) {
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
-	dest := fmt.Sprintf("%s:%d", id.LocalAddress.String(), id.LocalPort)
+	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
 
 	var wq waiter.Queue
 	ep, tErr := r.CreateEndpoint(&wq)
