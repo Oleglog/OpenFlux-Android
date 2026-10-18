@@ -3,7 +3,6 @@ package l3
 import (
 	"bytes"
 	"encoding/binary"
-	"universal-bypass-tool/transport"
 	"testing"
 	"time"
 )
@@ -214,8 +213,8 @@ func FuzzIPv4Reassembly(f *testing.F) {
 
 type limitedTransport struct{ recordingTransport }
 
-func (t *limitedTransport) PeerParameters() (transport.PeerParameters, bool) {
-	return transport.PeerParameters{Capabilities: transport.CapabilityIPv4 | transport.CapabilityTCP | transport.CapabilityUDP, MaxPacketSize: 1280}, true
+func (t *limitedTransport) PeerParameters() (peerParameters, bool) {
+	return peerParameters{MaxPacketSize: 1280}, true
 }
 
 func TestReturnPathNegotiatedMTU(t *testing.T) {
