@@ -152,6 +152,28 @@ func main() {
 	}
 	log.Printf("Transport: %s (codec: %s)", *transportType, *codec)
 
+	cookiePath := strings.TrimSpace(*cookiesFile)
+	if cookiePath == "" {
+		cookiePath = strings.TrimSpace(*cookiesFileAlias)
+	}
+	if cookiePath == "" {
+		if env := os.Getenv("OLCRTC_COOKIES_FILE"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		} else if env := os.Getenv("OLCRTC_COOKIES"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		} else if env := os.Getenv("OPENFLUX_COOKIES"); env != "" {
+			cookiePath = strings.TrimSpace(env)
+		}
+	}
+	// Raw Cookie header for string-based transports (avito, telemost,
+	// bitrix24): they take cookies only via constructor, and the
+	// LoadCookieFile block below covers just the jar-based ones.
+	cookieRaw := loadCookieHeader(cookiePath)
+	b24cookies := loadCookieHeader(os.Getenv("B24_COOKIES"))
+	if b24cookies == "" {
+		b24cookies = cookieRaw
+	}
+
 	config := transport.DefaultConfig()
 	var inner transport.Transport
 
@@ -174,16 +196,16 @@ func main() {
 			inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
 		} else if strings.Contains(globalDocUrl, "avito.ru") {
 			log.Printf("[INFO] Detected Avito URL, switching to avito transport")
-			inner = avito.NewAvitoTransport(globalDocUrl, config, "", !*exitNode)
+			inner = avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode)
 		} else if strings.Contains(globalDocUrl, "cups.online") {
 			log.Printf("[INFO] Detected Cups.online URL, switching to cupsonline transport")
 			inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode)
 		} else if strings.Contains(globalDocUrl, "telemost.yandex.ru") {
 			log.Printf("[INFO] Detected Telemost conference URL, switching to telemost transport")
-			inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
+			inner = yandex.NewTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
 		} else if strings.Contains(globalDocUrl, "bitrix24") {
 			log.Printf("[INFO] Detected Bitrix24 URL, switching to bitrix24 transport")
-			inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
+			inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, b24cookies, os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 		} else if isVolgaDoc(globalDocUrl) {
 			log.Printf("[INFO] Detected Volga editor document, switching to vyandex transport")
 			inner = yandex.NewYandexVolgaTransport(globalDocUrl, config)
@@ -205,7 +227,7 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		inner = avito.NewAvitoTransport(globalDocUrl, config, "", !*exitNode)
+		inner = avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode)
 	case "cupsonline", "cups":
 		if !*exitNode {
 			var err error
@@ -221,14 +243,14 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		inner = yandex.NewTelemostTransport("", globalDocUrl, *exitNode, config)
+		inner = yandex.NewTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
 	case "bitrix24", "b24":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Bitrix24 portal URL")
 		if err != nil {
 			log.Fatal(err)
 		}
-		inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, os.Getenv("B24_COOKIES"), os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
+		inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, b24cookies, os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
 	case "oneme":
 		uidint, _ := strconv.ParseInt(maxUid, 10, 64)
 		inner = oneme.NewOneMeTransport(*exitNode, maxToken, uidint, config)
@@ -236,19 +258,6 @@ func main() {
 		log.Fatalf("Unknown transport type: %s", *transportType)
 	}
 
-	cookiePath := strings.TrimSpace(*cookiesFile)
-	if cookiePath == "" {
-		cookiePath = strings.TrimSpace(*cookiesFileAlias)
-	}
-	if cookiePath == "" {
-		if env := os.Getenv("OLCRTC_COOKIES_FILE"); env != "" {
-			cookiePath = strings.TrimSpace(env)
-		} else if env := os.Getenv("OLCRTC_COOKIES"); env != "" {
-			cookiePath = strings.TrimSpace(env)
-		} else if env := os.Getenv("OPENFLUX_COOKIES"); env != "" {
-			cookiePath = strings.TrimSpace(env)
-		}
-	}
 	if cookiePath != "" {
 		type cookieLoader interface {
 			LoadCookieFile(string) error
@@ -260,6 +269,10 @@ func main() {
 			} else {
 				log.Printf("[INFO] Cookies loaded successfully from %s", cookiePath)
 			}
+		} else if cookieRaw != "" {
+			// String-cookie transports (avito/telemost/bitrix24) already got
+			// cookies via constructor; nothing more to load.
+			utils.Debugf("[INFO] cookies applied via constructor for %s", *transportType)
 		} else {
 			log.Printf("[WARN] Transport %s does not support loading cookie files", *transportType)
 		}
@@ -349,4 +362,56 @@ func readRequiredOption(value, filename, label string) (string, error) {
 func isVolgaDoc(docURL string) bool {
 	// Volga editor is strictly used for /edit/d/ documents
 	return strings.Contains(docURL, "/edit/d/")
+}
+
+// loadCookieHeader turns a --cookies value into a raw "name=value; ..."
+// header. It accepts a Netscape cookies.txt path, a raw header string, or a
+// B24_COOKIES-style env value. Returns "" when there is nothing usable.
+func loadCookieHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if data, err := os.ReadFile(value); err == nil {
+		value = string(data)
+	}
+	seen := make(map[string]struct{})
+	parts := make([]string, 0, 8)
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if fields := strings.Split(line, "\t"); len(fields) >= 7 {
+			// Netscape row: domain, subdomains, path, secure, expires, name, value.
+			// ponytail: no expiry/domain filtering, transports need raw pairs only.
+			name, val := strings.TrimSpace(fields[5]), strings.TrimSpace(fields[6])
+			if name == "" || val == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			parts = append(parts, name+"="+val)
+			continue
+		}
+		for _, kv := range strings.Split(line, ";") {
+			kv = strings.TrimSpace(kv)
+			eq := strings.IndexByte(kv, '=')
+			if eq <= 0 {
+				continue
+			}
+			name, val := strings.TrimSpace(kv[:eq]), strings.TrimSpace(kv[eq+1:])
+			if name == "" || val == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			parts = append(parts, name+"="+val)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
