@@ -41,11 +41,21 @@ func TestCursorPayloadsBatch(t *testing.T) {
 
 func TestHandleMessageDeliversEveryPacketOfABatch(t *testing.T) {
 	tr := NewMailruDocsTransport("Vuri/test", transport.DefaultConfig())
+	tr.recvCh = make(chan []byte, 2)
+	session := &DocSession{}
+	session.active.Store(true)
+	chatEntry := func(sender, payload string) string {
+		message := chatDataTagV2 + sender + b64(payload)
+		return fmt.Sprintf(`{"message":%q,"useridoriginal":"shared-user"}`, message)
+	}
+	msg := `42["message",{"type":"message","messages":[` +
+		chatEntry("2222222222", "first") + "," + chatEntry("3333333333", "second") + `]}]`
+	tr.handleMessage(session, []byte(msg))
+
 	var got []string
-	tr.Receive(func(b []byte) { got = append(got, string(b)) })
-	msg := `42["message",{"type":"cursor","messages":[` + cursorEntry("---KA---") + "," +
-		cursorEntry(b64("first")) + "," + cursorEntry(b64("second")) + `]}]`
-	tr.handleMessage(&DocSession{}, []byte(msg))
+	for len(tr.recvCh) > 0 {
+		got = append(got, string(<-tr.recvCh))
+	}
 	if !reflect.DeepEqual(got, []string{"first", "second"}) {
 		t.Fatalf("delivered %v, want [first second]", got)
 	}
