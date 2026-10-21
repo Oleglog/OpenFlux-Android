@@ -80,6 +80,7 @@ public final class OpenFluxVpnService extends VpnService {
 
     private void startTunnel(String url, String dnsServer, int mtu, int session) {
         if (!isCurrent(session)) return;
+        Mobile.setProtector(this::protect);
         String error = Mobile.start(url);
         if (error != null && !error.isEmpty()) {
             fail(session, error);

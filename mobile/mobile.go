@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"universal-bypass-tool/netbind"
 	"universal-bypass-tool/transport"
 	"universal-bypass-tool/transport/avito"
 	"universal-bypass-tool/transport/bitrix24"
@@ -17,6 +18,21 @@ import (
 	"universal-bypass-tool/transport/yandex"
 	"universal-bypass-tool/utils"
 )
+
+// SocketProtector is implemented on the Android side by VpnService.protect(fd).
+type SocketProtector interface {
+	Protect(fd int) bool
+}
+
+// SetProtector registers the Android VpnService socket protector so all
+// outbound OpenFlux TCP/UDP/WebRTC sockets bypass the VPN tunnel.
+func SetProtector(p SocketProtector) {
+	if p == nil {
+		netbind.SetProtector(nil)
+		return
+	}
+	netbind.SetProtector(p.Protect)
+}
 
 var (
 	client        = packetClient{}

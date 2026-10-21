@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"universal-bypass-tool/utils"
 )
 
 const (
@@ -28,7 +30,9 @@ func (c *MaxClient) Connect() error {
 	header := http.Header{}
 	header.Set("Origin", "https://web.max.ru")
 	header.Set("User-Agent", USER_AGENT)
-	conn, _, err := websocket.DefaultDialer.Dial(WS_HOST, header)
+	dialer := &websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	utils.ConfigureWebsocketDialerProxy(dialer, WS_HOST)
+	conn, _, err := dialer.Dial(WS_HOST, header)
 	if err != nil {
 		return err
 	}

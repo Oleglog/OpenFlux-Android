@@ -266,6 +266,12 @@ func (t *TCPTunnel) ListenTCP(port uint16) (net.Listener, error) {
 	}, ipv4.ProtocolNumber)
 }
 
+func (t *TCPTunnel) Close() {
+	if t.gvisorStack != nil {
+		t.gvisorStack.Close()
+	}
+}
+
 func (t *TCPTunnel) printStats() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()

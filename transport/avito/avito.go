@@ -728,6 +728,14 @@ func (t *AvitoTransport) Receive(callback func([]byte)) {
 	t.BaseTransport.Receive(callback)
 }
 
+// avitoPreferredBatchBytes sizes the upper coalescing layer's batches so each
+// ShareDB op (~355 ms RTT) carries a large coalesced batch rather than a small
+// 8 KB frame, while staying within maxRoomPieceBytes.
+const avitoPreferredBatchBytes = 60 * 1024
+
+// PreferredBatchBytes implements transport.BatchSizeHinter.
+func (t *AvitoTransport) PreferredBatchBytes() int { return avitoPreferredBatchBytes }
+
 func (t *AvitoTransport) IsConnected() bool {
 	if !t.BaseTransport.IsConnected() {
 		return false
