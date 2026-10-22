@@ -80,12 +80,25 @@ func detectTransport(docURL string) string {
 	if strings.Contains(docURL, "bitrix24") {
 		return "bitrix24"
 	}
+	if !strings.Contains(docURL, "://") && strings.HasPrefix(strings.TrimSpace(docURL), "Wy") {
+		return "cupsonline"
+	}
 
 	// Volga is strictly used on /edit/d/ documents
 	if strings.Contains(docURL, "/edit/d/") {
 		return "vyandex"
 	}
 	return "yandex"
+}
+
+func encryptionContext(detected, docURL string) string {
+	switch detected {
+	case "cupsonline", "cups":
+		return "cupsonline"
+	case "avito":
+		return "avito"
+	}
+	return docURL
 }
 
 // Start connects the packet transport. It returns an empty string on success
@@ -153,7 +166,7 @@ func Start(documentURL string) string {
 	}
 	if key != "" {
 		appendLog("[ANDROID] Включение сквозного шифрования AES-256-GCM")
-		encTrans, err := transport.NewEncryptedTransport(innerTrans, key, documentURL, false)
+		encTrans, err := transport.NewEncryptedTransport(innerTrans, key, encryptionContext(detected, documentURL), false)
 		if err != nil {
 			appendLog(fmt.Sprintf("[ANDROID] Ошибка настройки шифрования: %v", err))
 			client.mu.Lock()

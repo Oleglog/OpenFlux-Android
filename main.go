@@ -278,11 +278,36 @@ func main() {
 		}
 	}
 
+	type roomListObserver interface {
+		OnRoomList(func(string))
+	}
+	if ro, ok := inner.(roomListObserver); ok {
+		ro.OnRoomList(func(packed string) {
+			if packed == "" {
+				return
+			}
+			fullURL := packed
+			switch *transportType {
+			case "cupsonline", "cups":
+				fullURL = "https://interview.cups.online/live-coding/?rooms=" + packed
+			case "avito":
+				fullURL = "https://code.avito.ru/?rooms=" + packed
+			default:
+				if strings.Contains(globalDocUrl, "cups.online") {
+					fullURL = "https://interview.cups.online/live-coding/?rooms=" + packed
+				} else if strings.Contains(globalDocUrl, "avito.ru") {
+					fullURL = "https://code.avito.ru/?rooms=" + packed
+				}
+			}
+			log.Printf("[INFO] Active room URL: %s", fullURL)
+			if *exitNode {
+				persistRoomURLToEnv(fullURL)
+			}
+		})
+	}
+
 	if secret != "" {
-		context := *transportType
-		if globalDocUrl != "" {
-			context = globalDocUrl
-		}
+		context := encryptionContext(*transportType, globalDocUrl)
 		encrypted, err := transport.NewEncryptedTransport(inner, secret, context, *exitNode)
 		if err != nil {
 			log.Fatalf("Configure encrypted transport: %v", err)
@@ -312,6 +337,98 @@ func main() {
 	} else {
 		runClient(trans, *socksAddr)
 	}
+}
+
+func encryptionContext(transportType, docURL string) string {
+	switch strings.ToLower(strings.TrimSpace(transportType)) {
+	case "cups", "cupsonline":
+		return "cupsonline"
+	case "avito":
+		return "avito"
+	}
+	if strings.Contains(docURL, "cups.online") {
+		return "cupsonline"
+	}
+	if strings.Contains(docURL, "avito.ru") {
+		return "avito"
+	}
+	if docURL != "" {
+		return docURL
+	}
+	return transportType
+}
+
+func detectOlcrtcEnvFile() string {
+	if p := strings.TrimSpace(os.Getenv("OLCRTC_ENV_FILE")); p != "" {
+		return p
+	}
+	if st := strings.TrimSpace(os.Getenv("OLCRTC_STATUS_FILE")); st != "" {
+		// e.g. /run/olcrtc-7/status.json or /run/olcrtc/status.json
+		if strings.HasPrefix(st, "/run/olcrtc-") {
+			rest := strings.TrimPrefix(st, "/run/olcrtc-")
+			if idx := strings.IndexByte(rest, '/'); idx > 0 {
+				id := rest[:idx]
+				candidate := "/etc/olcrtc/" + id + "/env"
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate
+				}
+			}
+		} else if strings.HasPrefix(st, "/run/olcrtc/") {
+			if _, err := os.Stat("/etc/olcrtc/env"); err == nil {
+				return "/etc/olcrtc/env"
+			}
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if strings.HasPrefix(wd, "/var/lib/olcrtc-") {
+			id := strings.TrimPrefix(wd, "/var/lib/olcrtc-")
+			candidate := "/etc/olcrtc/" + id + "/env"
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		} else if wd == "/var/lib/olcrtc" {
+			if _, err := os.Stat("/etc/olcrtc/env"); err == nil {
+				return "/etc/olcrtc/env"
+			}
+		}
+	}
+	return ""
+}
+
+func persistRoomURLToEnv(roomURL string) {
+	envFile := detectOlcrtcEnvFile()
+	if envFile == "" {
+		return
+	}
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "OLCRTC_ROOM_ID=") {
+			if trimmed == "OLCRTC_ROOM_ID="+roomURL {
+				return
+			}
+			lines[i] = "OLCRTC_ROOM_ID=" + roomURL
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, "OLCRTC_ROOM_ID="+roomURL)
+	}
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	if err := os.WriteFile(envFile, []byte(out), 0640); err != nil {
+		log.Printf("[WARN] Failed to persist OLCRTC_ROOM_ID to %s: %v", envFile, err)
+		return
+	}
+	log.Printf("[INFO] Persisted OLCRTC_ROOM_ID to %s", envFile)
 }
 
 func runExit(trans transport.Transport, exitMode tunnel.ExitMode, localIP string) {
@@ -379,6 +496,11 @@ func loadCookieHeader(value string) string {
 	parts := make([]string, 0, 8)
 	for _, line := range strings.Split(value, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if strings.HasPrefix(line, "#HttpOnly_") {
+			line = strings.TrimPrefix(line, "#HttpOnly_")
+		} else if strings.HasPrefix(line, "#httponly_") {
+			line = strings.TrimPrefix(line, "#httponly_")
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
