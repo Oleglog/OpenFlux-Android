@@ -169,9 +169,11 @@ func main() {
 	// bitrix24): they take cookies only via constructor, and the
 	// LoadCookieFile block below covers just the jar-based ones.
 	cookieRaw := loadCookieHeader(cookiePath)
-	b24cookies := loadCookieHeader(os.Getenv("B24_COOKIES"))
+	avitoCookies := loadCookieHeaderForDomain(cookiePath, "avito.ru")
+	telemostCookies := loadCookieHeaderForDomain(cookiePath, "yandex.ru")
+	b24cookies := loadCookieHeaderForDomain(os.Getenv("B24_COOKIES"), "bitrix")
 	if b24cookies == "" {
-		b24cookies = cookieRaw
+		b24cookies = loadCookieHeaderForDomain(cookiePath, "bitrix")
 	}
 
 	config := transport.DefaultConfig()
@@ -196,13 +198,13 @@ func main() {
 			inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
 		} else if strings.Contains(globalDocUrl, "avito.ru") {
 			log.Printf("[INFO] Detected Avito URL, switching to avito transport")
-			inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode))
+			inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, avitoCookies, !*exitNode))
 		} else if strings.Contains(globalDocUrl, "cups.online") {
 			log.Printf("[INFO] Detected Cups.online URL, switching to cupsonline transport")
 			inner = transport.NewStripedRoomTransport(cupsonline.NewCupsonlineTransport(globalDocUrl, config, !*exitNode))
 		} else if strings.Contains(globalDocUrl, "telemost.yandex.ru") {
 			log.Printf("[INFO] Detected Telemost conference URL, switching to telemost transport")
-			inner = yandex.NewStripedTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
+			inner = yandex.NewStripedTelemostTransport(telemostCookies, globalDocUrl, *exitNode, config)
 		} else if strings.Contains(globalDocUrl, "bitrix24") {
 			log.Printf("[INFO] Detected Bitrix24 URL, switching to bitrix24 transport")
 			inner = bitrix24.NewBitrix24Transport(globalDocUrl, config, b24cookies, os.Getenv("B24_SESSID"), os.Getenv("B24_CHAT_ID"))
@@ -227,7 +229,7 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, cookieRaw, !*exitNode))
+		inner = transport.NewStripedRoomTransport(avito.NewAvitoTransport(globalDocUrl, config, avitoCookies, !*exitNode))
 	case "cupsonline", "cups":
 		if !*exitNode {
 			var err error
@@ -243,7 +245,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		inner = yandex.NewStripedTelemostTransport(cookieRaw, globalDocUrl, *exitNode, config)
+		inner = yandex.NewStripedTelemostTransport(telemostCookies, globalDocUrl, *exitNode, config)
 	case "bitrix24", "b24":
 		var err error
 		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "Bitrix24 portal URL")
@@ -485,6 +487,10 @@ func isVolgaDoc(docURL string) bool {
 // header. It accepts a Netscape cookies.txt path, a raw header string, or a
 // B24_COOKIES-style env value. Returns "" when there is nothing usable.
 func loadCookieHeader(value string) string {
+	return loadCookieHeaderForDomain(value, "")
+}
+
+func loadCookieHeaderForDomain(value, domainFilter string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
@@ -492,48 +498,66 @@ func loadCookieHeader(value string) string {
 	if data, err := os.ReadFile(value); err == nil {
 		value = string(data)
 	}
-	seen := make(map[string]struct{})
-	parts := make([]string, 0, 8)
-	for _, line := range strings.Split(value, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if strings.HasPrefix(line, "#HttpOnly_") {
-			line = strings.TrimPrefix(line, "#HttpOnly_")
-		} else if strings.HasPrefix(line, "#httponly_") {
-			line = strings.TrimPrefix(line, "#httponly_")
+	domainFilter = strings.ToLower(strings.TrimSpace(domainFilter))
+	parse := func(filter string) string {
+		seen := make(map[string]struct{})
+		parts := make([]string, 0, 8)
+		for _, line := range strings.Split(value, "\n") {
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "#httponly_") {
+				line = line[len("#httponly_"):]
+			}
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if fields := strings.Split(line, "\t"); len(fields) >= 7 {
+				rawDom := fields[0]
+				if strings.HasPrefix(strings.ToLower(rawDom), "#httponly_") {
+					rawDom = rawDom[len("#httponly_"):]
+				}
+				dom := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rawDom), "."))
+				if filter != "" && !strings.Contains(dom, filter) {
+					continue
+				}
+				name, val := strings.TrimSpace(fields[5]), strings.TrimSpace(fields[6])
+				if name == "" || val == "" {
+					continue
+				}
+				if _, dup := seen[name]; dup {
+					continue
+				}
+				seen[name] = struct{}{}
+				parts = append(parts, name+"="+val)
+				continue
+			}
+			rawLine := line
+			if strings.HasPrefix(strings.ToLower(rawLine), "cookie:") {
+				rawLine = strings.TrimSpace(rawLine[len("cookie:"):])
+			}
+			for _, kv := range strings.Split(rawLine, ";") {
+				kv = strings.TrimSpace(kv)
+				eq := strings.IndexByte(kv, '=')
+				if eq <= 0 {
+					continue
+				}
+				name, val := strings.TrimSpace(kv[:eq]), strings.TrimSpace(kv[eq+1:])
+				if name == "" || val == "" {
+					continue
+				}
+				if _, dup := seen[name]; dup {
+					continue
+				}
+				seen[name] = struct{}{}
+				parts = append(parts, name+"="+val)
+			}
 		}
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if fields := strings.Split(line, "\t"); len(fields) >= 7 {
-			// Netscape row: domain, subdomains, path, secure, expires, name, value.
-			// ponytail: no expiry/domain filtering, transports need raw pairs only.
-			name, val := strings.TrimSpace(fields[5]), strings.TrimSpace(fields[6])
-			if name == "" || val == "" {
-				continue
-			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
-			seen[name] = struct{}{}
-			parts = append(parts, name+"="+val)
-			continue
-		}
-		for _, kv := range strings.Split(line, ";") {
-			kv = strings.TrimSpace(kv)
-			eq := strings.IndexByte(kv, '=')
-			if eq <= 0 {
-				continue
-			}
-			name, val := strings.TrimSpace(kv[:eq]), strings.TrimSpace(kv[eq+1:])
-			if name == "" || val == "" {
-				continue
-			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
-			seen[name] = struct{}{}
-			parts = append(parts, name+"="+val)
+		return strings.Join(parts, "; ")
+	}
+	if domainFilter != "" {
+		if filtered := parse(domainFilter); filtered != "" {
+			return filtered
 		}
 	}
-	return strings.Join(parts, "; ")
+	return parse("")
 }
