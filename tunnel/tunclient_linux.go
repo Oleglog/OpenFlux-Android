@@ -69,6 +69,7 @@ func RunTUNClient(trans transport.Transport, name string) error {
 	// Uplink: whatever the kernel routes into the device goes to the carrier.
 	go func() {
 		buf := make([]byte, 65535)
+		logged := 0
 		for {
 			n, err := file.Read(buf)
 			if err != nil || n <= 0 {
@@ -78,6 +79,14 @@ func RunTUNClient(trans transport.Transport, name string) error {
 			}
 			pkt := make([]byte, n)
 			copy(pkt, buf[:n])
+			if logged < 5 {
+				logged++
+				head := pkt
+				if len(head) > 12 {
+					head = head[:12]
+				}
+				utils.Infof("[TUN-CLIENT] up#%d len=%d head=% x", logged, len(pkt), head)
+			}
 			if err := trans.Send(pkt); err != nil {
 				utils.Debugf("[TUN-CLIENT] send failed: %v", err)
 			}
@@ -94,14 +103,21 @@ func RunTUNClient(trans transport.Transport, name string) error {
 		}
 	})
 
-	// Stay up while the carrier is up: a client that returned here would drop the
-	// device and take the tunnel down at the first reconnect.
+	// Stay up while the carrier is up. A single false reading means nothing —
+	// rotation reports the transport briefly disconnected — so leave only after
+	// the carrier has been gone for a while, otherwise the device would be
+	// dropped at the first make-before-break swap.
 	waitConnected(trans, 30*time.Second)
-	for trans.IsConnected() {
+	lastUp := time.Now()
+	for {
+		if trans.IsConnected() {
+			lastUp = time.Now()
+		} else if time.Since(lastUp) > 30*time.Second {
+			utils.Infof("[TUN-CLIENT] carrier gone for 30s, leaving")
+			return nil
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	utils.Infof("[TUN-CLIENT] carrier disconnected, leaving")
-	return nil
 }
 
 // waitConnected waits until the transport reports a live carrier, or the timeout
