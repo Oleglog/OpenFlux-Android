@@ -157,3 +157,23 @@ func TestRelayRetriesRateLimitedBatch(t *testing.T) {
 		t.Fatalf("packets sent = %d, want 1", got)
 	}
 }
+
+// TestVolgaLingerStaysWideEnough pins the coalescing window that was measured on
+// the stand: the relay meters requests, not bytes, so the window is the only
+// throughput lever this carrier has. 100 ms delivered 908-975 KB per 130 s
+// against 729-745 KB at the 5 ms global default (+25-35 %) for +0.28 s on a page
+// open, and 250 ms added nothing while costing +0.7 s. A refactor that quietly
+// drops back to the global default would lose that, silently.
+func TestVolgaLingerStaysWideEnough(t *testing.T) {
+	transport := &YandexVolgaTransport{}
+	linger := transport.PreferredBatchLingerMs()
+	if linger < 25 {
+		t.Fatalf("Volga linger = %dms: the relay meters requests, so a window under 25ms collects one or two segments per request and gives up the measured +25-35%%", linger)
+	}
+	if linger > 250 {
+		t.Fatalf("Volga linger = %dms: past 250ms the window buys nothing and costs +0.7s on a page open", linger)
+	}
+	if transport.PreferredBatchBytes() <= 0 || transport.PreferredBatchBytes() > (1<<16)-1 {
+		t.Fatalf("Volga batch hint = %d, must fit the relay's uint16 message length", transport.PreferredBatchBytes())
+	}
+}
