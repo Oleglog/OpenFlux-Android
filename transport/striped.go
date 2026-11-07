@@ -639,7 +639,7 @@ func (s *StripedTransport) statsLoop() {
 			if fatalOnAllLanesDead.Load() {
 				// Hand the node back to its supervisor: a process that keeps
 				// running with no lane looks healthy and carries nothing.
-				utils.Errorf("[STRIPE] exiting so the supervisor restarts the node")
+				utils.Infof("[STRIPE] exiting so the supervisor restarts the node")
 				os.Exit(1)
 			}
 			return
