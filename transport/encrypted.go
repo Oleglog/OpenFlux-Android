@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/scrypt"
+
+	"universal-bypass-tool/utils"
 )
 
 const (
@@ -41,6 +44,10 @@ type EncryptedTransport struct {
 	seenMu        sync.Mutex
 	seen          map[string]struct{}
 	seenOrder     []string
+
+	// warnPlain keeps the "peer is not encrypting" advice to one line: every
+	// frame from that peer reaches this branch.
+	warnPlain atomic.Bool
 }
 
 // NewEncryptedTransport wraps inner with a directional AES-256-GCM stream.
@@ -93,6 +100,17 @@ func deriveDirectionalKey(master []byte, label string) []byte {
 	return mac.Sum(nil)
 }
 
+// looksLikeEncryptedFrame reports whether data starts with the AES-GCM frame
+// header this transport seals: magic "OFX", version, direction. A raw IPv4 or
+// IPv6 packet can never start with 0x4F, so the batch layer can tell "my peer
+// encrypts and I do not" from "this is a legacy unbatched packet" instead of
+// delivering ciphertext upward.
+func looksLikeEncryptedFrame(data []byte) bool {
+	return len(data) >= encryptedHeader &&
+		data[0] == encryptedMagic[0] && data[1] == encryptedMagic[1] &&
+		data[2] == encryptedMagic[2] && data[3] == encryptedVersion
+}
+
 func newGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -127,6 +145,12 @@ func (e *EncryptedTransport) Receive(callback func([]byte)) {
 		if header[0] != encryptedMagic[0] || header[1] != encryptedMagic[1] ||
 			header[2] != encryptedMagic[2] || header[3] != encryptedVersion ||
 			header[4] != e.recvDirection {
+			// A batch frame instead of a sealed one means the peer runs without
+			// -encryption-key while this side has one. Silently dropping is what
+			// makes that look like a dead carrier, so say it once.
+			if len(packet) > 1 && packet[0] == batchFormatVersion && e.warnPlain.CompareAndSwap(false, true) {
+				utils.Infof("[CRYPTO] peer sends plaintext batch frames but this side runs with -encryption-key; start both sides with the same key")
+			}
 			return
 		}
 		nonceEnd := encryptedHeader + e.receiveAEAD.NonceSize()
