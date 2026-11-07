@@ -117,6 +117,11 @@ type BoardsTransport struct {
 	jarMu     sync.RWMutex
 
 	errNotifier func(err error, transportName, url, html, reason string)
+
+	// goodSocketURL is the engine.io endpoint that last completed the handshake:
+	// a shard host and the site host behave differently per deployment, and this
+	// keeps a reconnect on the endpoint that actually served us.
+	goodSocketURL atomic.Value
 }
 
 func NewBoardsTransport(rawURL string, config transport.TransportConfig) *BoardsTransport {
@@ -576,7 +581,6 @@ func reconnectBackoffBoards(n int) time.Duration {
 }
 
 func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
-	wsURL := fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", info.wsHost)
 
 	header := http.Header{}
 	header.Set("User-Agent", boardsUA)
@@ -592,21 +596,41 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 	}
 	header.Set("Cookie", strings.Join(cookieParts, "; "))
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 15 * time.Second,
-		NetDialContext:   dialIPv4First,
-	}
-	utils.ConfigureWebsocketDialerProxy(&dialer, wsURL)
-	utils.Debugf("[BOARDS] dial %s", wsURL)
-	conn, resp, err := dialer.Dial(wsURL, header)
-	if err != nil {
+	// The board API hands out a shard host (ws_host, e.g. socket33.boards.yandex.ru),
+	// but measured 2026-11-08 that shard answers 404 for /socket.io/ while the site
+	// host answers the engine.io handshake (200 with sid/upgrades) once the Origin
+	// header is present. Try the endpoint that worked last time, then the shard,
+	// then the site host.
+	var conn *websocket.Conn
+	var dialErr error
+	dialed := ""
+	for _, candidate := range t.socketURLs(info) {
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 15 * time.Second,
+			NetDialContext:   dialIPv4First,
+		}
+		utils.ConfigureWebsocketDialerProxy(&dialer, candidate)
+		utils.Debugf("[BOARDS] dial %s", candidate)
+		c, resp, err := dialer.Dial(candidate, header)
+		if err == nil {
+			conn = c
+			dialed = candidate
+			t.goodSocketURL.Store(candidate)
+			break
+		}
 		status := 0
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		return fmt.Errorf("dial %s (http %d): %w", wsURL, status, err)
+		dialErr = fmt.Errorf("dial %s (http %d): %w", candidate, status, err)
 	}
-	utils.Debugf("[BOARDS] WS connected: %s", info.wsHost)
+	if conn == nil {
+		if dialErr == nil {
+			dialErr = fmt.Errorf("dial: no socket endpoint configured")
+		}
+		return dialErr
+	}
+	utils.Debugf("[BOARDS] WS connected: %s (shard %q)", dialed, info.wsHost)
 
 	participant := info.userHash
 	creator := info.userHash
@@ -1183,4 +1207,31 @@ func boardsGuestLanding(e *boardsAPIError) bool {
 		return true
 	}
 	return strings.Contains(e.Redirect, "/guest")
+}
+
+// socketURLs lists the engine.io endpoints to try for this board, best first:
+// the one that worked last time, then the API's shard host, then the site host.
+// The shard from the API goes early because a healthy deployment serves it; the
+// site host is the fallback measured serving the handshake when the shard
+// answered 404 (2026-11-08).
+func (t *BoardsTransport) socketURLs(info boardsInfo) []string {
+	urls := make([]string, 0, 3)
+	add := func(host string) {
+		if host == "" {
+			return
+		}
+		url := fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", host)
+		for _, have := range urls {
+			if have == url {
+				return
+			}
+		}
+		urls = append(urls, url)
+	}
+	if prev, ok := t.goodSocketURL.Load().(string); ok && prev != "" {
+		urls = append(urls, prev)
+	}
+	add(info.wsHost)
+	add(boardsBase)
+	return urls
 }
