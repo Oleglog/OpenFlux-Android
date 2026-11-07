@@ -36,6 +36,7 @@ func main() {
 	client := flag.Bool("client", false, "Run as client")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
+	tunDevice := flag.String("tun", "", "Linux only: client mode over an existing TUN device (raw IP, same framing as the Android client; needs an l3 exit node)")
 	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, mailru)")
 	codec := flag.String("codec", "batched", "Codec: batched (default, zstd+coalescing) or legacy (per-packet LZ4)")
 	flag.StringVar(&globalDocUrl, "url", "", "Document URL. Required for Yandex/Mailru Docs transport")
@@ -339,6 +340,12 @@ func main() {
 		// (Restart=on-failure) restart it instead of running on as a zombie.
 		transport.ExitOnAllLanesDead(true)
 		runExit(trans, exitMode, *localIP)
+	} else if *tunDevice != "" {
+		// Raw IP over an existing TUN device: the same framing the Android client
+		// uses, so the phone's path to an l3 exit can be exercised on a Linux box.
+		if err := tunnel.RunTUNClient(trans, *tunDevice); err != nil {
+			log.Fatalf("TUN client: %v", err)
+		}
 	} else {
 		runClient(trans, *socksAddr)
 	}
