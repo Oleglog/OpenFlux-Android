@@ -203,3 +203,15 @@ func TestSocketURLsPreferTheBoardsShard(t *testing.T) {
 		t.Fatalf("second candidate = %q, want the remembered shard", urls[1])
 	}
 }
+
+// One modify-objects event carries the whole batch, and the board refuses a
+// value above 48 KiB of payload (PAYLOAD_TOO_LARGE, measured 2026-11-08), so
+// the batch hint must stay under that ceiling or a burst loses its tail.
+func TestBoardsBatchFitsOneObject(t *testing.T) {
+	if got := (&BoardsTransport{}).PreferredBatchBytes(); got <= 0 || got > boardsMaxObjectBytes {
+		t.Fatalf("PreferredBatchBytes() = %d, want it within (0, %d]", got, boardsMaxObjectBytes)
+	}
+	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 0 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want non-negative", got)
+	}
+}

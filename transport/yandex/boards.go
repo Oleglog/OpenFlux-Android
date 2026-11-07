@@ -41,6 +41,15 @@ const (
 
 	// Таймаут ожидания 431 в handshake.
 	boardsHandshakeWait = 15 * time.Second
+
+	// Потолок одного объекта доски. Сервер отвечает
+	// {"error":{"code":200,"securityCode":"PAYLOAD_TOO_LARGE"}} на value
+	// длиннее 65536 символов base64, то есть на payload больше 48 КиБ
+	// (измерено 2026-11-08: 49152 байта проходят, 49153 уже нет).
+	boardsMaxObjectBytes = 48 * 1024
+
+	// Батч под этот потолок с запасом на обвязку объекта.
+	boardsBatchBytes = 48000
 )
 
 // ---- внутренние типы ----
@@ -142,6 +151,17 @@ func NewBoardsTransport(rawURL string, config transport.TransportConfig) *Boards
 func (t *BoardsTransport) SetErrorNotifier(fn func(err error, transportName, url, html, reason string)) {
 	t.errNotifier = fn
 }
+
+// PreferredBatchBytes tells the coalescing layer how many bytes fit into one
+// modify-objects event. The board's own limit is boardsMaxObjectBytes; the
+// batch stays under it so a segment-heavy burst cannot tip one message over
+// the cap and lose the whole batch to PAYLOAD_TOO_LARGE.
+func (t *BoardsTransport) PreferredBatchBytes() int { return boardsBatchBytes }
+
+// PreferredBatchLingerMs widens the coalescing window a little: one board
+// message costs a round trip (measured 0.07-0.17 s on the board's own shard),
+// so a longer window turns browsing traffic into fewer, fuller objects.
+func (t *BoardsTransport) PreferredBatchLingerMs() int { return 20 }
 
 func (t *BoardsTransport) Start() error {
 	if err := t.BaseTransport.Start(); err != nil {
