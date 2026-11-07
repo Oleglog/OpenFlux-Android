@@ -75,10 +75,9 @@ func DefaultVolgaConfig() VolgaConfig {
 	// Batching is the only lever on page latency for this carrier: every batch
 	// is one HTTP round trip to the Volga relay, which meters requests and
 	// answers 429 when they come too fast (seen on the stand as
-	// "relay rate limited (429); retrying batch in 20/40/80/160ms"). These three
+	// "relay rate limited (429); retrying batch in 20/40/80/160ms"). These
 	// knobs are read here so the stand can A/B them without a rebuild; the
 	// defaults are the values the field runs with.
-	batchSize := envIntDefault("OPENFLUX_VOLGA_BATCH", 10)
 	batchTimeout := time.Duration(envIntDefault("OPENFLUX_VOLGA_BATCH_TIMEOUT_MS", 20)) * time.Millisecond
 	// Each batch is one HTTP round trip to the relay, so the bytes per batch —
 	// not the request rate — are what the phone pays for: at the measured ~0.5 s
