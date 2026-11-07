@@ -8,6 +8,7 @@ import (
 	godebug "runtime/debug"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/wlynxg/anet"
 	"universal-bypass-tool/socks5"
@@ -271,6 +272,25 @@ func main() {
 				log.Printf("[WARN] Cookie file %s: %v (continuing without cookies)", cookiePath, err)
 			} else {
 				log.Printf("[INFO] Cookies loaded successfully from %s", cookiePath)
+			}
+			// Keep the file in step with the live session. Carriers that rotate
+			// their session cookies (Volga does it on nearly every request) turn
+			// a restart into a dead login otherwise: the process runs for hours
+			// on an in-memory jar that the file never learns about, and the next
+			// start re-reads the stale one and exits with "login required".
+			// Exit @5 was lost exactly that way on 2026-11-07.
+			if cs, ok := inner.(interface{ SaveCookieFile(string) error }); ok {
+				go func() {
+					tick := time.NewTicker(2 * time.Minute)
+					defer tick.Stop()
+					for range tick.C {
+						if err := cs.SaveCookieFile(cookiePath); err != nil {
+							utils.Debugf("[COOKIES] cannot refresh %s: %v", cookiePath, err)
+							continue
+						}
+						utils.Debugf("[COOKIES] refreshed %s from the live session", cookiePath)
+					}
+				}()
 			}
 		} else if cookieRaw != "" {
 			// String-cookie transports (avito/telemost/bitrix24) already got
