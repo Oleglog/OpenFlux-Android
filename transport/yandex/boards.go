@@ -267,8 +267,9 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 		}
 	}
 
-	if err := t.postAPI(client, hash, "request-guest-token",
-		map[string]string{"name": name, "hash": hash}); err != nil {
+	guest, err := t.postAPI(client, hash, "request-guest-token",
+		map[string]string{"name": name, "hash": hash})
+	if err != nil {
 		return boardsInfo{}, fmt.Errorf("request-guest-token: %w", err)
 	}
 
@@ -279,16 +280,28 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 			jwt = c.Value
 		}
 	}
+
+	// get-whiteboard-info runs before the cookie check because it is what names
+	// the reason when the guest join is refused: a closed board answers
+	// request-guest-token with a redirect to the site root and no error at all,
+	// while this call says code 212 "Guest mode disabled".
+	state, infoErr := t.getWhiteboardInfo(client, hash)
 	if jwt == "" {
-		return boardsInfo{}, fmt.Errorf("token_%s not found", hash)
+		if infoErr != nil {
+			return boardsInfo{}, infoErr
+		}
+		if guest.Redirect != "" && !strings.Contains(guest.Redirect, hash) {
+			return boardsInfo{}, fmt.Errorf(
+				"token_%s not found: request-guest-token redirected to %s and set no cookie; the board is probably closed to guests",
+				hash, guest.Redirect)
+		}
+		return boardsInfo{}, fmt.Errorf("token_%s not found: request-guest-token set no cookie", hash)
+	}
+	if infoErr != nil {
+		utils.Debugf("[BOARDS] get-whiteboard-info failed: %v", infoErr)
 	}
 	payload := jwtPayload(jwt)
 	userHash, _ := payload["u"].(string)
-
-	state, err := t.getWhiteboardInfo(client, hash)
-	if err != nil {
-		utils.Debugf("[BOARDS] get-whiteboard-info failed: %v", err)
-	}
 
 	var cookies []*http.Cookie
 	cookies = append(cookies, jar.Cookies(u)...)
@@ -330,21 +343,73 @@ func apiRequest(hash, action string, content interface{}) *http.Request {
 	return req
 }
 
-func (t *BoardsTransport) postAPI(client *http.Client, hash, action string, content interface{}) error {
+// apiResponse is the part of an /api reply we act on. The server answers
+// HTTP 200 even when it refuses the call and names the reason in "error", so
+// a status-code check alone reads a refusal as a success.
+type apiResponse struct {
+	Error *struct {
+		Code        int    `json:"code"`
+		Description string `json:"description"`
+	} `json:"error"`
+	Redirect string `json:"redirect"`
+}
+
+// boardsAPIError is a refusal carried in the JSON body of a 200 response.
+type boardsAPIError struct {
+	Action      string
+	Code        int
+	Description string
+	Redirect    string
+}
+
+func (e *boardsAPIError) Error() string {
+	msg := fmt.Sprintf("boards /api %s: code %d %q", e.Action, e.Code, e.Description)
+	if e.Redirect != "" {
+		msg += ", redirect " + e.Redirect
+	}
+	switch e.Code {
+	case 212:
+		msg += "; the board is closed to guests — ask the owner to enable link sharing (Доступ по ссылке) and to re-send the /whiteboard/?hash=... link"
+	case 250:
+		msg += "; the hash names no board"
+	case 200:
+		msg += "; the hash is not a 32-character board hash"
+	}
+	return msg
+}
+
+// decodeAPIResponse turns a 200 body into its refusal, if it carries one.
+func decodeAPIResponse(action string, body []byte) (apiResponse, error) {
+	var r apiResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return r, nil // not a refusal; leave the body to the caller
+	}
+	if r.Error == nil {
+		return r, nil
+	}
+	return r, &boardsAPIError{
+		Action:      action,
+		Code:        r.Error.Code,
+		Description: r.Error.Description,
+		Redirect:    r.Redirect,
+	}
+}
+
+func (t *BoardsTransport) postAPI(client *http.Client, hash, action string, content interface{}) (apiResponse, error) {
 	resp, err := client.Do(apiRequest(hash, action, content))
 	if err != nil {
-		return err
+		return apiResponse{}, err
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
 		n := len(body)
 		if n > 200 {
 			n = 200
 		}
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body[:n]))
+		return apiResponse{}, fmt.Errorf("status %d: %s", resp.StatusCode, string(body[:n]))
 	}
-	return nil
+	return decodeAPIResponse(action, body)
 }
 
 func (t *BoardsTransport) getWhiteboardInfo(client *http.Client, hash string) (map[string]string, error) {
@@ -356,6 +421,11 @@ func (t *BoardsTransport) getWhiteboardInfo(client *http.Client, hash string) (m
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	// A 200 with "error" is a refusal, not an empty board: the workspace line
+	// in state["ws_host"] would otherwise just fall back to the default host.
+	if _, apiErr := decodeAPIResponse("get-whiteboard-info", body); apiErr != nil {
+		return nil, apiErr
 	}
 
 	var info struct {
