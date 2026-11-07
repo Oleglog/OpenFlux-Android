@@ -215,3 +215,30 @@ func TestBoardsBatchFitsOneObject(t *testing.T) {
 		t.Fatalf("PreferredBatchLingerMs() = %d, want non-negative", got)
 	}
 }
+
+// The board decodes an object's value and refuses one that carries visible
+// IPv4/TCP traffic: measured 2026-11-08, a real SYN inside the batch frame got
+// {"error":{"code":200,"securityCode":"NETWORK_TRANSPORT"}} while the same
+// frame with a zero-filled packet was accepted. That is the refusal a peer
+// without -encryption-key hits, so it has to reach the log by name.
+func TestAckSecurityCodeIsReadFromTheBoardAck(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"network transport", `433[{"error":{"code":200,"securityCode":"NETWORK_TRANSPORT"}}]`, "NETWORK_TRANSPORT"},
+		{"payload too large", `437[{"error":{"code":200,"securityCode":"PAYLOAD_TOO_LARGE"}}]`, "PAYLOAD_TOO_LARGE"},
+		{"plain ack", `433[{"result":true}]`, ""},
+		{"plain error", `435[{"error":{"code":0}}]`, ""},
+		{"not json", `43`, ""},
+		{"empty", ``, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ackSecurityCode([]byte(c.raw)); got != c.want {
+				t.Fatalf("ackSecurityCode(%q) = %q, want %q", c.raw, got, c.want)
+			}
+		})
+	}
+}
