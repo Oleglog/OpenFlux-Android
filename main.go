@@ -335,6 +335,9 @@ func main() {
 	}
 
 	if *exitNode {
+		// A node whose every lane is gone cannot recover on its own; let systemd
+		// (Restart=on-failure) restart it instead of running on as a zombie.
+		transport.ExitOnAllLanesDead(true)
 		runExit(trans, exitMode, *localIP)
 	} else {
 		runClient(trans, *socksAddr)
