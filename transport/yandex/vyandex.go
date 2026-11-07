@@ -71,7 +71,12 @@ func DefaultVolgaConfig() VolgaConfig {
 	// defaults are the values the field runs with.
 	batchSize := envIntDefault("OPENFLUX_VOLGA_BATCH", 10)
 	batchTimeout := time.Duration(envIntDefault("OPENFLUX_VOLGA_BATCH_TIMEOUT_MS", 20)) * time.Millisecond
-	batchMaxBytes := envIntDefault("OPENFLUX_VOLGA_BATCH_BYTES", 24*1024)
+	// Each batch is one HTTP round trip to the relay, so the bytes per batch —
+	// not the request rate — are what the phone pays for: at the measured ~0.5 s
+	// round trip, 24 KB per batch caps a single worker at ~48 KB/s while 48 KB
+	// caps it at ~96 KB/s for the same number of metered requests. The wire
+	// length is a uint16 in the relay frame, so 48 KB stays well inside it.
+	batchMaxBytes := envIntDefault("OPENFLUX_VOLGA_BATCH_BYTES", 48*1024)
 	// Three relay workers, measured on the stand with a 4-minute soak per point:
 	// 1 worker 6.6-6.9 s per page, 2 workers 5.98 s, 3 workers 4.88 and 5.46 s,
 	// 5 workers 5.25 s with the relay answering 429 in bursts. One worker

@@ -275,6 +275,13 @@ type MailruDocsTransport struct {
 	// while one is already in flight.
 	rotating atomic.Bool
 
+	// lastDial is the UnixNano at which this transport last started a carrier
+	// dial. rotateCarrier refuses to dial again before mailruDialFloor has
+	// passed since it: the editor API answers a too-frequent dial with http 429
+	// and the transport then keeps sending on a connection whose budget is
+	// already spent (measured on the phone 2026-11-07, see mailruDialFloor).
+	lastDial atomic.Int64
+
 	// ourIDs holds every anonymous editor id this transport has authenticated as
 	// (one per carrier connection; the server assigns a fresh one each time).
 	// The receive path skips any chat frame whose useridoriginal is in this set
@@ -453,7 +460,7 @@ func (t *MailruDocsTransport) Start() error {
 }
 
 // mailruPreferredBatchBytes is the default coalescing batch size for the chat
-// carrier. The R7 server cuts a connection with 4004 after ~25 chat messages
+// carrier. The R7 server cuts a connection with 4004 after ~22-34 chat messages
 // regardless of their size, so a large batch fits far more tunnel data into
 // that fixed message budget. Measured on 2026-11-07 against a live document
 // (Windows client and Linux exit on separate hosts, downloads through socks5h):
@@ -463,12 +470,13 @@ func (t *MailruDocsTransport) Start() error {
 //	32 KB batches  — 100 KB in 1.4 s, furthest progress on 1 MB
 //	16 KB batches  — 1 MB completes, but throughput halves (21 KB/s)
 //
-// A chat message is base64 (+33%) inside a JSON text frame, so 32 KB of tunnel
-// payload stays under the frame size the server accepts while still carrying
-// ~20 segments per message — which is what makes the ~25-message budget last
-// over real traffic. OPENFLUX_BATCH_BYTES overrides this (see
-// transport.BatchSizeHinter).
-const mailruPreferredBatchBytes = 32_000
+// A chat message is base64 (+33%) inside a JSON text frame, so a batch stays
+// under the frame size the server accepts while still carrying ~20 segments per
+// message — which is what makes the ~25-message budget last over real traffic.
+// 48 KB is the largest batch below the 60 KB point where a 1 MB transfer
+// stalled, and it carries 50% more tunnel data per metered frame than 32 KB.
+// OPENFLUX_BATCH_BYTES overrides this (see transport.BatchSizeHinter).
+const mailruPreferredBatchBytes = 48_000
 
 // PreferredBatchBytes implements transport.BatchSizeHinter.
 func (t *MailruDocsTransport) PreferredBatchBytes() int { return mailruPreferredBatchBytes }
@@ -483,25 +491,28 @@ const mailruPreferredBatchLingerMs = 25
 // PreferredBatchLingerMs implements transport.BatchLingerHinter.
 func (t *MailruDocsTransport) PreferredBatchLingerMs() int { return mailruPreferredBatchLingerMs }
 
-// defaultMailruMsgIntervalMs is the minimum gap between chat writes on one
-// carrier connection. Pacing stays: without it the client's write queue bursts
-// (events, retransmits) and the carrier cuts the connection after ~25 frames —
-// measured on 2026-11-07 as 11 kicks in five minutes right after pacing was
-// removed. 500 ms (2/s) keeps the burst flat; the price is latency, and the
-// separate time-based rotation that used to push the round trip to 1.6-3 s is
-// gone (see defaultMailruRotateMs).
+// defaultMailruDialFloorMs is the minimum gap between two carrier dials.
 //
-// 150 ms (6.7/s) is the measured sweet spot once rotation is frame-count
-// driven and the batch carries 32 KB: a 577-byte page went 1.2 s -> 0.3 s and
-// ya.ru 7.0 s -> 1.5 s against 500 ms, with zero 4004 kicks because each
-// connection still rotates after ~20 frames. The old 500 ms was a workaround
-// for small batches drowning in per-message pacing.
-// OPENFLUX_MAILRU_MSG_INTERVAL_MS overrides it; 0 disables pacing.
-const defaultMailruMsgIntervalMs = 150
+// This is the knob that actually sets the ceiling. The editor API meters dials
+// the way the document meters chat frames: a dial 4 s after the previous one
+// answers http 429, and the transport then sits out a ~10 s cooldown while it
+// keeps writing on a connection whose 22-34 frame budget is already spent.
+// Measured on the phone 2026-11-07 (Android client v1.7.43, exit @7): the frame
+// trigger dialed every ~4 s, got "dial rate-limited (http 429, hit #1)" within
+// seconds, then the exit logged "server disconnectReason (kick #18, sent=25)"
+// and the tunnel went from ~1 KB/s to dead for 8-22 s. On the same stand with
+// traffic slow enough for one dial per ~30 s there were 18 rotations, 0 kicks
+// and 0 rate-limits over 9 minutes.
+//
+// Throughput is therefore (frames per connection x batch) / dial floor, and the
+// send pacing below is derived from this value so one connection's frame budget
+// exactly spans one dial window. OPENFLUX_MAILRU_DIAL_FLOOR_MS overrides it;
+// 0 disables the floor (dial as soon as the frame budget is spent).
+const defaultMailruDialFloorMs = 15_000
 
-var mailruMsgInterval = func() time.Duration {
-	n := defaultMailruMsgIntervalMs
-	if v := os.Getenv("OPENFLUX_MAILRU_MSG_INTERVAL_MS"); v != "" {
+var mailruDialFloor = func() time.Duration {
+	n := defaultMailruDialFloorMs
+	if v := os.Getenv("OPENFLUX_MAILRU_DIAL_FLOOR_MS"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			n = parsed
 		}
@@ -509,12 +520,70 @@ var mailruMsgInterval = func() time.Duration {
 	return time.Duration(n) * time.Millisecond
 }()
 
+// defaultMailruRotateMsgs rotates the carrier make-before-break once this many
+// chat frames have been written on it. The carrier cuts a connection after
+// 22-34 frames regardless of pacing (measured 2026-11-07 over 22 harness runs),
+// and a rotation only prevents that cut when
+//
+//	rotateMsgs + auth_frames < 22,  auth_frames = auth_time(~0.5-1.5 s)/interval
+//
+// so the count has to leave room for the dial to land: 16 frames plus the ~2
+// frames a 1.5 s auth costs at the pacing below is 18, still under the budget,
+// while the old 8 wasted two thirds of every connection. Rotation is also
+// gated by mailruDialFloor, so raising this does not raise the dial rate.
+// OPENFLUX_MAILRU_ROTATE_MSGS overrides it; 0 disables pre-emptive rotation and
+// measured as the worst setting — the connection is always kicked and the
+// tunnel then sits dead for 8-22 s.
+const defaultMailruRotateMsgs = 16
+
+var mailruRotateMsgs = func() int64 {
+	n := int64(defaultMailruRotateMsgs)
+	if v := os.Getenv("OPENFLUX_MAILRU_ROTATE_MSGS"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+			n = parsed
+		}
+	}
+	return n
+}()
+
+// mailruHardFrameCap is the frame count a single connection must never reach:
+// the server's 4004 budget is 22-34 frames, and a connection that reaches this
+// one is already spending another connection's allowance. The writer stops
+// handing it frames and waits for the swap instead — a short queue stall is
+// recoverable (TCP retransmits), a 4004 kick costs 8-22 s of dead tunnel.
+const mailruHardFrameCap = 20
+
+// defaultMailruMsgIntervalMs is the minimum gap between chat writes on one
+// carrier connection, and it is derived rather than fixed: one connection's
+// frame budget must last exactly one dial window, otherwise the transport
+// either dials faster than the carrier allows (http 429, see
+// mailruDialFloor) or idles a healthy connection while that window runs out.
+// With the defaults (15 s floor, 16 frames) that is ~940 ms per frame, giving
+// ~51 KB/s of tunnel payload — the carrier's own ceiling, not ours.
+//
+// An earlier fixed 150 ms pacing looked better in isolation (577 B page in
+// 0.3 s, ya.ru 1.5 s) but only because the harness dialed once per ~30 s and
+// never met the dial meter; under real traffic it produced the 429 storm above.
+// OPENFLUX_MAILRU_MSG_INTERVAL_MS overrides it; 0 disables pacing.
+const defaultMailruMsgIntervalMs = 150
+
+var mailruMsgInterval = func() time.Duration {
+	if v := os.Getenv("OPENFLUX_MAILRU_MSG_INTERVAL_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			return time.Duration(parsed) * time.Millisecond
+		}
+	}
+	if mailruDialFloor > 0 && mailruRotateMsgs > 0 {
+		return mailruDialFloor / time.Duration(mailruRotateMsgs)
+	}
+	return defaultMailruMsgIntervalMs * time.Millisecond
+}()
+
 // defaultMailruRotateMs is the connection age at which the carrier WebSocket is
-// preemptively rotated. 0 disables the time trigger: rotation is driven by the
-// frame count below, which is what the carrier meters. A 12 s timer fired late
-// at high rate (the 4004 kick lands at ~25 frames, well before 12 s of traffic)
-// and its queue stall pushed the round trip to 1.6-3 s, which broke TCP
-// handshakes on the client.
+// preemptively rotated by the timer. 0 disables the timer: rotation is driven by
+// the frame count together with mailruDialFloor, which is what the carrier
+// meters. A 12 s timer fired late at high rate and its queue stall pushed the
+// round trip to 1.6-3 s, which broke TCP handshakes on the client.
 // OPENFLUX_MAILRU_ROTATE_MS overrides it; 0 disables the timer.
 const defaultMailruRotateMs = 0
 
@@ -531,33 +600,6 @@ var mailruRotateInterval = func() time.Duration {
 // mailruRotateAuthWait bounds how long a rotation waits for the server to accept
 // the new connection's auth before swapping sends onto it.
 const mailruRotateAuthWait = 8 * time.Second
-
-// defaultMailruRotateMsgs rotates the carrier make-before-break once this many
-// chat frames have been written on it. The carrier cuts a connection after
-// 22-34 frames regardless of pacing (measured 2026-11-07 over 22 harness runs),
-// and a rotation only prevents that cut when
-//
-//	rotateMsgs + auth_frames < 22,  auth_frames = auth_time(~0.5-1.5s)/interval
-//
-// so the count has to leave room for the dial to land. Measured at 150 ms
-// pacing: rotate 20 -> 27 frames before the new carrier is up, 10 kicks in one
-// run and a dead tunnel after each; rotate 8 -> 17 frames worst case, 0 kicks
-// in two runs, 1 MB completed (54 s and 79 s), ya.ru 4.7 s. At 300 ms rotate 8
-// also gave 0 kicks; 500/20 was stable but slower (ya.ru 7-8.5 s).
-// OPENFLUX_MAILRU_ROTATE_MSGS overrides it; 0 disables pre-emptive rotation and
-// measured as the worst setting — the connection is always kicked and the
-// tunnel then sits dead for 8-22 s.
-const defaultMailruRotateMsgs = 8
-
-var mailruRotateMsgs = func() int64 {
-	n := int64(defaultMailruRotateMsgs)
-	if v := os.Getenv("OPENFLUX_MAILRU_ROTATE_MSGS"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
-			n = parsed
-		}
-	}
-	return n
-}()
 
 func (t *MailruDocsTransport) Send(data []byte) error {
 	// The queue outlives any single carrier connection, so a packet handed over
@@ -664,6 +706,10 @@ func (t *MailruDocsTransport) dialAndAuth(userID string, writeQueue chan []byte)
 	headers.Set("Origin", "https://docs.datacloudmail.ru")
 
 	utils.Debugf("[M-DOCS] WebSocket dial %s", info.WsURL)
+	// Stamp the dial whether or not it succeeds: the floor exists to keep the
+	// carrier's dial meter from ever seeing a burst, and a failed dial counts
+	// against that meter just like a successful one.
+	t.lastDial.Store(time.Now().UnixNano())
 	conn, resp, err := dialer.Dial(info.WsURL, headers)
 	if err != nil {
 		status := 0
@@ -878,6 +924,16 @@ func (t *MailruDocsTransport) rotateCarrier(old *DocSession) {
 	if !t.IsRunning() {
 		return
 	}
+	// Respect the carrier's dial meter before opening anything new. A fresh
+	// connection spends its frame budget in ~15 s of traffic, so the trigger
+	// can fire again within seconds; a dial inside the floor is answered with
+	// http 429, which costs the current connection its remaining budget plus the
+	// cooldown — the worst of both outcomes. Skipping is safe: the writer keeps
+	// its pending packet and the trigger retries as soon as the floor passes.
+	if wait := t.dialFloorRemaining(); wait > 0 {
+		utils.Debugf("[M-DOCS] rotation deferred: %v left of the %v dial floor", wait.Round(time.Millisecond), mailruDialFloor)
+		return
+	}
 	utils.Debugf("[M-DOCS] rotating carrier (age >= %v)", mailruRotateInterval)
 
 	session, err := t.dialAndAuth(old.UserID, old.WriteQueue)
@@ -924,6 +980,22 @@ func (t *MailruDocsTransport) rotateCarrier(old *DocSession) {
 	}
 	t.RecordReconnect()
 	utils.Debugf("[M-DOCS] carrier rotated")
+}
+
+// dialFloorRemaining reports how long rotateCarrier must still wait before it
+// may open a new carrier connection. Zero means the meter is clear.
+func (t *MailruDocsTransport) dialFloorRemaining() time.Duration {
+	if mailruDialFloor <= 0 {
+		return 0
+	}
+	last := t.lastDial.Load()
+	if last == 0 {
+		return 0
+	}
+	if remaining := mailruDialFloor - time.Since(time.Unix(0, last)); remaining > 0 {
+		return remaining
+	}
+	return 0
 }
 
 func (t *MailruDocsTransport) writerLoop() {
@@ -1007,12 +1079,39 @@ func (t *MailruDocsTransport) writerLoop() {
 		// per-connection, not per-account, so skipping rotation for cookie
 		// sessions (as this fork did in v1.0.19) let a loaded connection burn
 		// the budget and get cut every ~15-35 s.
-		if n := session.sentCount.Add(1); mailruRotateMsgs > 0 && n == mailruRotateMsgs {
+		//
+		// The test is >= rather than == so a rotation that the dial floor
+		// deferred is retried on the next frame instead of never happening.
+		if n := session.sentCount.Add(1); mailruRotateMsgs > 0 && n >= mailruRotateMsgs {
 			if t.rotating.CompareAndSwap(false, true) {
 				s := session
 				utils.SafeGo("mailru.rotate", func() { t.rotateCarrier(s) })
 			}
+			// Never write past the hard cap: the next frame on this connection
+			// would spend another connection's allowance and earn a 4004 kick,
+			// which costs an 8-22 s dead tunnel. Hold the pending packet until
+			// the swap lands instead — a short stall is recovered by TCP.
+			if mailruHardFrameCap > 0 && n >= mailruHardFrameCap {
+				t.waitForCarrierSwap(session)
+			}
 		}
+	}
+}
+
+// waitForCarrierSwap blocks until the transport is writing on a connection other
+// than spent (or the transport stops), re-arming the rotation while it waits.
+func (t *MailruDocsTransport) waitForCarrierSwap(spent *DocSession) {
+	for t.IsRunning() {
+		t.Mu.RLock()
+		current := t.session
+		t.Mu.RUnlock()
+		if current != spent {
+			return
+		}
+		if t.rotating.CompareAndSwap(false, true) {
+			utils.SafeGo("mailru.rotate", func() { t.rotateCarrier(spent) })
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
