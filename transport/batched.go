@@ -48,6 +48,10 @@ type BatchedTransport struct {
 
 	mu     sync.RWMutex
 	userCb func([]byte)
+
+	// warnNoKey keeps the "peer is encrypting, this side is not" advice to one
+	// line: the condition repeats on every frame the peer sends.
+	warnNoKey atomic.Bool
 }
 
 func envInt(name string, def int) int {
@@ -167,6 +171,16 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 		}
 		// Fallback: if data is from a legacy unbatched peer (marker 0x00, 0x1F, or raw IP 0x45/0x60)
 		if data[0] != batchFormatVersion {
+			// A peer that runs with -encryption-key while this side does not:
+			// the frame is AES-GCM ciphertext, not a packet. Feeding it on used
+			// to surface as "l3 drop: bad IPv4 slice (85 bytes)" — 33 bytes of
+			// crypto overhead plus the batch — which says nothing about the key.
+			if looksLikeEncryptedFrame(data) {
+				if b.warnNoKey.CompareAndSwap(false, true) {
+					utils.Infof("[BATCH] peer sends AES-GCM frames but this side has no -encryption-key; start both sides with the same key")
+				}
+				return
+			}
 			decompressed, err := decompress(data)
 			if err != nil {
 				b.deliver(data)
