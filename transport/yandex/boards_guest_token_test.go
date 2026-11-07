@@ -146,3 +146,72 @@ func TestBoardsGuestLandingIsNotARefusal(t *testing.T) {
 		t.Fatal("a wrapped 204 must still be recognised as the guest landing")
 	}
 }
+// The anonymous info reply carries no board, so the dashboard and the shard
+// only appear in the reply fetched with the guest token; the merge must take
+// them without letting an absent field erase what the first reply knew.
+func TestMergeBoardStateKeepsTokenScopedFields(t *testing.T) {
+	state := map[string]string{"dashboard": "", "ws_host": "socket33.boards.yandex.ru"}
+	mergeBoardState(state, map[string]string{
+		"dashboard":     "3f9d53a03819d058cbcb2503d8413d39",
+		"current_slide": "3f9d53a03819d058cbcb2503d8413d39",
+		"ws_host":       "socket62.boards.yandex.ru",
+		"csrf":          "",
+	})
+	if state["dashboard"] != "3f9d53a03819d058cbcb2503d8413d39" {
+		t.Fatalf("dashboard = %q, want the slide from the token reply", state["dashboard"])
+	}
+	if state["ws_host"] != "socket62.boards.yandex.ru" {
+		t.Fatalf("ws_host = %q, want the shard from the token reply", state["ws_host"])
+	}
+	if _, ok := state["csrf"]; ok {
+		t.Fatalf("csrf = %q, want an empty field not to be copied", state["csrf"])
+	}
+
+	mergeBoardState(state, map[string]string{"dashboard": ""})
+	if state["dashboard"] == "" {
+		t.Fatalf("dashboard was erased by a reply that did not name one")
+	}
+}
+
+// A dashboard room lives on one socket shard: two guests that dial the site
+// host are load-balanced onto different front pods and never see each other's
+// objects (measured 2026-11-08). So the board's own shard has to be tried
+// first, ahead of whatever endpoint happened to work last time.
+func TestSocketURLsPreferTheBoardsShard(t *testing.T) {
+	tr := &BoardsTransport{}
+	tr.goodSocketURL.Store("wss://boards.yandex.ru/socket.io/?EIO=4&transport=websocket")
+
+	urls := tr.socketURLs(boardsInfo{wsHost: "socket62.boards.yandex.ru"})
+	if len(urls) != 2 {
+		t.Fatalf("socketURLs() = %v, want the shard and the site host", urls)
+	}
+	if urls[0] != "wss://socket62.boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("first candidate = %q, want the board shard", urls[0])
+	}
+	if urls[1] != "wss://boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("second candidate = %q, want the site host", urls[1])
+	}
+
+	// A remembered shard is still tried when the API names another one, and it
+	// is not duplicated.
+	tr.goodSocketURL.Store("wss://socket61.boards.yandex.ru/socket.io/?EIO=4&transport=websocket")
+	urls = tr.socketURLs(boardsInfo{wsHost: "socket62.boards.yandex.ru"})
+	if len(urls) != 3 {
+		t.Fatalf("socketURLs() = %v, want shard, remembered shard and site host", urls)
+	}
+	if urls[1] != "wss://socket61.boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("second candidate = %q, want the remembered shard", urls[1])
+	}
+}
+
+// One modify-objects event carries the whole batch, and the board refuses a
+// value above 48 KiB of payload (PAYLOAD_TOO_LARGE, measured 2026-11-08), so
+// the batch hint must stay under that ceiling or a burst loses its tail.
+func TestBoardsBatchFitsOneObject(t *testing.T) {
+	if got := (&BoardsTransport{}).PreferredBatchBytes(); got <= 0 || got > boardsMaxObjectBytes {
+		t.Fatalf("PreferredBatchBytes() = %d, want it within (0, %d]", got, boardsMaxObjectBytes)
+	}
+	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 0 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want non-negative", got)
+	}
+}

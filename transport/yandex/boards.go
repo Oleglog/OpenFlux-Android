@@ -41,6 +41,15 @@ const (
 
 	// Таймаут ожидания 431 в handshake.
 	boardsHandshakeWait = 15 * time.Second
+
+	// Потолок одного объекта доски. Сервер отвечает
+	// {"error":{"code":200,"securityCode":"PAYLOAD_TOO_LARGE"}} на value
+	// длиннее 65536 символов base64, то есть на payload больше 48 КиБ
+	// (измерено 2026-11-08: 49152 байта проходят, 49153 уже нет).
+	boardsMaxObjectBytes = 48 * 1024
+
+	// Батч под этот потолок с запасом на обвязку объекта.
+	boardsBatchBytes = 48000
 )
 
 // ---- внутренние типы ----
@@ -142,6 +151,17 @@ func NewBoardsTransport(rawURL string, config transport.TransportConfig) *Boards
 func (t *BoardsTransport) SetErrorNotifier(fn func(err error, transportName, url, html, reason string)) {
 	t.errNotifier = fn
 }
+
+// PreferredBatchBytes tells the coalescing layer how many bytes fit into one
+// modify-objects event. The board's own limit is boardsMaxObjectBytes; the
+// batch stays under it so a segment-heavy burst cannot tip one message over
+// the cap and lose the whole batch to PAYLOAD_TOO_LARGE.
+func (t *BoardsTransport) PreferredBatchBytes() int { return boardsBatchBytes }
+
+// PreferredBatchLingerMs widens the coalescing window a little: one board
+// message costs a round trip (measured 0.07-0.17 s on the board's own shard),
+// so a longer window turns browsing traffic into fewer, fuller objects.
+func (t *BoardsTransport) PreferredBatchLingerMs() int { return 20 }
 
 func (t *BoardsTransport) Start() error {
 	if err := t.BaseTransport.Start(); err != nil {
@@ -296,6 +316,7 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 		// wbpost() sends the csrf it got from any earlier /api reply.
 		guestContent["csrf"] = csrf
 	}
+
 	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
 	if err != nil {
 		return boardsInfo{}, fmt.Errorf("request-guest-token: %w", err)
@@ -321,6 +342,25 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 
 	payload := jwtPayload(jwt)
 	userHash, _ := payload["u"].(string)
+
+	// The token turns the anonymous info into the board's own: the first call
+	// answered 204 + /guest (guest landing), so the dashboard and the shard are
+	// only known now. The guest page does the same — it follows the redirect to
+	// /whiteboard/?hash=... and the app asks again. Without this the dashboard
+	// stays empty, subscribe-slide-dashboard joins no room, and peer packets
+	// never reach each other (measured 2026-11-08: both peers logged
+	// "subscribed", zero server-modify-objects in either direction).
+	if state == nil {
+		state = map[string]string{}
+	}
+	if tokenState, terr := t.getWhiteboardInfo(client, hash); terr != nil {
+		utils.Debugf("[BOARDS] board info with token failed: %v", terr)
+	} else {
+		mergeBoardState(state, tokenState)
+	}
+	if state["dashboard"] == "" {
+		utils.Debugf("[BOARDS] board info names no dashboard; subscribe will carry the presentation only")
+	}
 
 	var cookies []*http.Cookie
 	cookies = append(cookies, jar.Cookies(u)...)
@@ -580,6 +620,17 @@ func reconnectBackoffBoards(n int) time.Duration {
 	return d
 }
 
+// mergeBoardState fills dst with the non-empty entries of src. The info reply
+// fetched with the guest token supersedes the anonymous one, but a field the
+// second reply omits must not erase what the first one named.
+func mergeBoardState(dst, src map[string]string) {
+	for k, v := range src {
+		if v != "" {
+			dst[k] = v
+		}
+	}
+}
+
 func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 
 	header := http.Header{}
@@ -631,6 +682,12 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 		return dialErr
 	}
 	utils.Debugf("[BOARDS] WS connected: %s (shard %q)", dialed, info.wsHost)
+	if info.wsHost != "" && !strings.Contains(dialed, info.wsHost) {
+		// The room is per shard, so a site-host dial only works if the load
+		// balancer happens to put both peers on one front pod. Say so: the
+		// symptom otherwise is a silently dead tunnel.
+		utils.Debugf("[BOARDS] dialed %s instead of the board's shard %s: peers may land on different pods and never share a room", dialed, info.wsHost)
+	}
 
 	participant := info.userHash
 	creator := info.userHash
@@ -951,6 +1008,11 @@ func (t *BoardsTransport) handleMessage(sess *boardsSession, raw []byte) {
 
 	if bytes.HasPrefix(raw, []byte("43")) {
 		t.handle431(sess, raw)
+		if bytes.Contains(raw, []byte(`"error"`)) {
+			// Every event goes out with an ack id, so a refusal arrives here
+			// instead of the log; without this a rejected write is silent.
+			utils.Debugf("[BOARDS] event ack error: %s", shortStr(string(raw), 240))
+		}
 		return
 	}
 	if !bytes.HasPrefix(raw, []byte("42[")) {
@@ -1210,28 +1272,40 @@ func boardsGuestLanding(e *boardsAPIError) bool {
 }
 
 // socketURLs lists the engine.io endpoints to try for this board, best first:
-// the one that worked last time, then the API's shard host, then the site host.
-// The shard from the API goes early because a healthy deployment serves it; the
-// site host is the fallback measured serving the handshake when the shard
-// answered 404 (2026-11-08).
+// the board's own shard host, then the endpoint that worked last time, then the
+// site host.
+//
+// The shard goes first for a reason beyond reachability: a dashboard room is
+// per socket shard. Two guests that dial the site host are load-balanced onto
+// different front pods and never see each other's modify-objects — measured
+// 2026-11-08, two peers on boards.yandex.ru delivered nothing in either
+// direction, the same two peers on socket62.boards.yandex.ru delivered both
+// ways. The shard from get-whiteboard-info is per board, so both peers of a
+// tunnel pick the same one. The site host stays as a last resort for a shard
+// that answers 404, which is how socket33.boards.yandex.ru behaved.
 func (t *BoardsTransport) socketURLs(info boardsInfo) []string {
 	urls := make([]string, 0, 3)
-	add := func(host string) {
-		if host == "" {
+	addURL := func(u string) {
+		if u == "" {
 			return
 		}
-		url := fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", host)
 		for _, have := range urls {
-			if have == url {
+			if have == u {
 				return
 			}
 		}
-		urls = append(urls, url)
+		urls = append(urls, u)
 	}
-	if prev, ok := t.goodSocketURL.Load().(string); ok && prev != "" {
-		urls = append(urls, prev)
+	addHost := func(host string) {
+		if host == "" {
+			return
+		}
+		addURL(fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", host))
 	}
-	add(info.wsHost)
-	add(boardsBase)
+	addHost(info.wsHost)
+	if prev, ok := t.goodSocketURL.Load().(string); ok {
+		addURL(prev)
+	}
+	addHost(boardsBase)
 	return urls
 }
