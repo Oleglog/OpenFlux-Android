@@ -267,8 +267,21 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 		}
 	}
 
-	guest, err := t.postAPI(client, hash, "request-guest-token",
-		map[string]string{"name": name, "hash": hash})
+	state, err := t.getWhiteboardInfo(client, hash)
+	if err != nil {
+		// This call is the guest's admission check, not a nicety: the guest page
+		// asks it before the name form is shown and follows its redirect to
+		// /restrict. A refusal here is the reason the join cannot work, so it
+		// goes up instead of a "token not found" from the next step.
+		return boardsInfo{}, err
+	}
+
+	guestContent := map[string]string{"name": name, "hash": hash}
+	if csrf := state["csrf"]; csrf != "" {
+		// wbpost() sends the csrf it got from any earlier /api reply.
+		guestContent["csrf"] = csrf
+	}
+	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
 	if err != nil {
 		return boardsInfo{}, fmt.Errorf("request-guest-token: %w", err)
 	}
@@ -280,16 +293,9 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 			jwt = c.Value
 		}
 	}
-
-	// get-whiteboard-info runs before the cookie check because it is what names
-	// the reason when the guest join is refused: a closed board answers
-	// request-guest-token with a redirect to the site root and no error at all,
-	// while this call says code 212 "Guest mode disabled".
-	state, infoErr := t.getWhiteboardInfo(client, hash)
 	if jwt == "" {
-		if infoErr != nil {
-			return boardsInfo{}, infoErr
-		}
+		// An open board answers with a redirect back to the board and the
+		// token cookie; a closed one redirects to the site root without a word.
 		if guest.Redirect != "" && !strings.Contains(guest.Redirect, hash) {
 			return boardsInfo{}, fmt.Errorf(
 				"token_%s not found: request-guest-token redirected to %s and set no cookie; the board is probably closed to guests",
@@ -297,9 +303,7 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 		}
 		return boardsInfo{}, fmt.Errorf("token_%s not found: request-guest-token set no cookie", hash)
 	}
-	if infoErr != nil {
-		utils.Debugf("[BOARDS] get-whiteboard-info failed: %v", infoErr)
-	}
+
 	payload := jwtPayload(jwt)
 	userHash, _ := payload["u"].(string)
 
@@ -352,6 +356,7 @@ type apiResponse struct {
 		Description string `json:"description"`
 	} `json:"error"`
 	Redirect string `json:"redirect"`
+	CSRF     string `json:"csrf"`
 }
 
 // boardsAPIError is a refusal carried in the JSON body of a 200 response.
@@ -363,7 +368,7 @@ type boardsAPIError struct {
 }
 
 func (e *boardsAPIError) Error() string {
-	msg := fmt.Sprintf("boards /api %s: code %d %q", e.Action, e.Code, e.Description)
+	msg := fmt.Sprintf("/api %s: code %d %q", e.Action, e.Code, e.Description)
 	if e.Redirect != "" {
 		msg += ", redirect " + e.Redirect
 	}
@@ -429,6 +434,7 @@ func (t *BoardsTransport) getWhiteboardInfo(client *http.Client, hash string) (m
 	}
 
 	var info struct {
+		CSRF         string `json:"csrf"`
 		Presentation struct {
 			Properties struct {
 				CurrentSlide string `json:"current_slide"`
@@ -443,6 +449,9 @@ func (t *BoardsTransport) getWhiteboardInfo(client *http.Client, hash string) (m
 		return nil, err
 	}
 	out := map[string]string{}
+	if info.CSRF != "" {
+		out["csrf"] = info.CSRF
+	}
 	if info.Presentation.Properties.CurrentSlide != "" {
 		out["current_slide"] = info.Presentation.Properties.CurrentSlide
 		out["dashboard"] = info.Presentation.Properties.CurrentSlide

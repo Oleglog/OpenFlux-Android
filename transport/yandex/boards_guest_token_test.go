@@ -101,3 +101,16 @@ func TestDecodeAPIResponseIgnoresNonJSONAndSuccess(t *testing.T) {
 		})
 	}
 }
+
+// wbpost() re-sends the csrf it got from an earlier /api reply, so the guest
+// join has to be able to read it off the board info reply.
+func TestDecodeAPIResponseCarriesCSRF(t *testing.T) {
+	resp, err := decodeAPIResponse("get-whiteboard-info",
+		[]byte(`{"csrf":"d6b1a2","presentation":{"properties":{"current_slide":"7a1"}}}`))
+	if err != nil {
+		t.Fatalf("decodeAPIResponse() = %v, want nil", err)
+	}
+	if resp.CSRF != "d6b1a2" {
+		t.Fatalf("CSRF = %q, want %q", resp.CSRF, "d6b1a2")
+	}
+}
