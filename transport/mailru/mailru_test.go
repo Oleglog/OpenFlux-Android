@@ -150,6 +150,8 @@ func Test4004CooldownEscalatesOnlyOnRepeatedKicks(t *testing.T) {
 	if got := transport.nextKickCooldown(); got != 0 {
 		t.Fatalf("first kick waited %v, want 0", got)
 	}
+	// The next connection is fresh; its own age must not clear the streak.
+	transport.sessionStart.Store(time.Now().UnixNano())
 	if got := transport.nextKickCooldown(); got != mailruKickBackoffBase {
 		t.Fatalf("second kick waited %v, want %v", got, mailruKickBackoffBase)
 	}
