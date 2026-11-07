@@ -81,7 +81,7 @@ func solveCaptcha(docURL string, jar http.CookieJar, userAgent string) (string, 
 		}
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			return "", fmt.Errorf("captcha unexpected status %d", resp.StatusCode)
+			return "", newCaptchaError(fmt.Sprintf("captcha status %d", resp.StatusCode), currentURL)
 		}
 
 		loc := resp.Header.Get("Location")
@@ -170,7 +170,10 @@ func solveCaptchaHTML(body, pageURL string, jar http.CookieJar, userAgent string
 		respPost.StatusCode, safeVolgaURL(respPost.Header.Get("Location")))
 
 	if respPost.StatusCode < 300 || respPost.StatusCode >= 400 {
-		return "", fmt.Errorf("captcha POST unexpected status %d", respPost.StatusCode)
+		// A refused POST means the interactive checkbox is in the way, not that
+		// something transient failed: attach the challenge page so the client
+		// can hand the user exactly that URL instead of the document.
+		return "", newCaptchaError(fmt.Sprintf("captcha POST status %d", respPost.StatusCode), pageURL)
 	}
 
 	retpath := respPost.Header.Get("Location")
@@ -203,6 +206,28 @@ var (
 	reFormAction  = regexp.MustCompile(`<form[^>]*action="([^"]+)"`)
 )
 
+// CaptchaError is ErrCaptchaRequired with the challenge page attached. The
+// interactive checkbox cannot be solved from Go — the POST is refused with
+// "form-fb-hint=7.73" because it lacks the browser's PGreed attestation — so
+// the client has to open exactly this URL in a real browser and bring the
+// cookies back. The document URL is not it: a browser loads the document
+// happily and never sees a challenge.
+type CaptchaError struct {
+	Reason string
+	URL    string
+}
+
+func (e *CaptchaError) Error() string {
+	return fmt.Sprintf("%s: %s: %s", ErrCaptchaRequired, e.Reason, e.URL)
+}
+
+// Unwrap keeps errors.Is(err, ErrCaptchaRequired) working for every caller.
+func (e *CaptchaError) Unwrap() error { return ErrCaptchaRequired }
+
+func newCaptchaError(reason, pageURL string) error {
+	return &CaptchaError{Reason: reason, URL: pageURL}
+}
+
 func parseCaptchaHTML(html, pageURL string) (*captchaSSRData, string, error) {
 	var ssr captchaSSRData
 	if m := reSSRDataAtob.FindStringSubmatch(html); len(m) >= 2 {
@@ -223,10 +248,10 @@ func parseCaptchaHTML(html, pageURL string) (*captchaSSRData, string, error) {
 			// still comes back as form-fb-hint=7.73. Report it as a captcha
 			// requirement so the caller stops retrying and asks for fresh
 			// cookies instead of burning the exit IP on every attempt.
-			return nil, "", fmt.Errorf("%w: smartcaptcha checkbox", ErrCaptchaRequired)
+			return nil, "", newCaptchaError("smartcaptcha checkbox", pageURL)
 		}
 	} else if bytes.Contains([]byte(html), []byte("checkbox-captcha-form")) {
-		return nil, "", fmt.Errorf("%w: smartcaptcha checkbox", ErrCaptchaRequired)
+		return nil, "", newCaptchaError("smartcaptcha checkbox", pageURL)
 	} else {
 		return nil, "", fmt.Errorf("captcha: __SSR_DATA__ not found")
 	}
