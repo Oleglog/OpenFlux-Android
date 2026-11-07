@@ -55,6 +55,7 @@ jobs:
           go mod tidy
           GOOS=linux GOARCH=amd64 go build -o dist/openflux-linux-amd64 .
           GOOS=linux GOARCH=arm64 go build -o dist/openflux-linux-arm64 .
+          GOOS=windows GOARCH=amd64 go build -o dist/openflux-windows-amd64.exe .
 
       - name: Build Android APKs
         run: |
@@ -63,7 +64,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum OpenFlux-android-*.apk openflux-linux-* > SHA256SUMS
+          sha256sum OpenFlux-android-*.apk openflux-linux-* openflux-windows-* > SHA256SUMS
 
       - name: Publish GitHub Release
         env:
@@ -72,11 +73,13 @@ jobs:
           gh release create "$RELEASE_TAG" \
             dist/OpenFlux-android-*.apk \
             dist/openflux-linux-* \
+            dist/openflux-windows-* \
             dist/SHA256SUMS \
             --title "OpenFlux $RELEASE_TAG" \
-            --notes "OpenFlux Android VPN client and Linux exit-node binaries ($RELEASE_TAG). Compatible with upstream OpenFlux with auto-detection for Yandex Docs (both Volga and classic editors)." || \
+            --notes "OpenFlux Android VPN client and Linux/Windows exit-node and client binaries ($RELEASE_TAG). Compatible with upstream OpenFlux with auto-detection for Yandex Docs (both Volga and classic editors)." || \
           gh release upload "$RELEASE_TAG" \
             dist/OpenFlux-android-*.apk \
             dist/openflux-linux-* \
+            dist/openflux-windows-* \
             dist/SHA256SUMS \
             --clobber
