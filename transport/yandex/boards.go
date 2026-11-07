@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	mrand "math/rand"
@@ -269,11 +270,20 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 
 	state, err := t.getWhiteboardInfo(client, hash)
 	if err != nil {
-		// This call is the guest's admission check, not a nicety: the guest page
-		// asks it before the name form is shown and follows its redirect to
-		// /restrict. A refusal here is the reason the join cannot work, so it
-		// goes up instead of a "token not found" from the next step.
-		return boardsInfo{}, err
+		// The info call doubles as the guest admission check. A signed-in browser
+		// gets the board back; an anonymous one is answered with code 204 and a
+		// redirect to /guest, which is the guest landing page and not a refusal —
+		// the session is minted by request-guest-token right after, the same call
+		// that page makes (measured 2026-11-08 on a board with link access open:
+		// info -> 204 + /guest, then request-guest-token -> Set-Cookie
+		// token_<hash>). Only real refusals go up: 212 "Guest mode disabled"
+		// (link access off) and the hash errors.
+		var apiErr *boardsAPIError
+		if !errors.As(err, &apiErr) || !boardsGuestLanding(apiErr) {
+			return boardsInfo{}, err
+		}
+		utils.Debugf("[BOARDS] /api answered %d %q (guest landing), continuing to request-guest-token", apiErr.Code, apiErr.Description)
+		state = nil
 	}
 
 	guestContent := map[string]string{"name": name, "hash": hash}
@@ -1159,4 +1169,18 @@ func (t *BoardsTransport) ApplyCookies(values map[string]string) error {
 		_ = s.Conn.Close()
 	}
 	return nil
+}
+
+// boardsGuestLanding reports whether an /api refusal means "you are not signed
+// in" rather than "this board is closed". Yandex answers an anonymous info call
+// with code 204 (or a redirect to /guest) and mints the guest session on the
+// next call, so treating it as fatal would refuse every open board.
+func boardsGuestLanding(e *boardsAPIError) bool {
+	if e == nil {
+		return false
+	}
+	if e.Code == 204 {
+		return true
+	}
+	return strings.Contains(e.Redirect, "/guest")
 }

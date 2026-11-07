@@ -2,6 +2,7 @@ package yandex
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -112,5 +113,36 @@ func TestDecodeAPIResponseCarriesCSRF(t *testing.T) {
 	}
 	if resp.CSRF != "d6b1a2" {
 		t.Fatalf("CSRF = %q, want %q", resp.CSRF, "d6b1a2")
+	}
+}
+
+// TestBoardsGuestLandingIsNotARefusal pins the difference between "you are not
+// signed in" and "this board is closed": an anonymous info call is answered with
+// code 204 and a redirect to /guest, and the guest session is minted right after
+// by request-guest-token. Treating 204 as fatal made every board with link access
+// open look closed (measured 2026-11-08). Code 212 with a redirect to /restrict
+// stays a refusal.
+func TestBoardsGuestLandingIsNotARefusal(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *boardsAPIError
+		want bool
+	}{
+		{"code 204", &boardsAPIError{Code: 204, Redirect: "https://boards.yandex.ru/guest?hash=abc"}, true},
+		{"redirect to guest without code", &boardsAPIError{Code: 0, Redirect: "https://boards.yandex.ru/guest?hash=abc"}, true},
+		{"guest mode disabled", &boardsAPIError{Code: 212, Description: "Guest mode disabled", Redirect: "https://boards.yandex.ru/restrict?hash=abc"}, false},
+		{"hash names no board", &boardsAPIError{Code: 250, Description: "Presentation not found"}, false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := boardsGuestLanding(c.err); got != c.want {
+			t.Fatalf("%s: boardsGuestLanding() = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// errors.As must see the refusal through the wrapping the caller does.
+	wrapped := fmt.Errorf("/api get-whiteboard-info: %w", &boardsAPIError{Code: 204})
+	var apiErr *boardsAPIError
+	if !errors.As(wrapped, &apiErr) || !boardsGuestLanding(apiErr) {
+		t.Fatal("a wrapped 204 must still be recognised as the guest landing")
 	}
 }
