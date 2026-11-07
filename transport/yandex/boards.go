@@ -295,8 +295,7 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 	if csrf := state["csrf"]; csrf != "" {
 		// wbpost() sends the csrf it got from any earlier /api reply.
 		guestContent["csrf"] = csrf
-	}
-	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
+	}	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
 	if err != nil {
 		return boardsInfo{}, fmt.Errorf("request-guest-token: %w", err)
 	}
@@ -321,6 +320,25 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 
 	payload := jwtPayload(jwt)
 	userHash, _ := payload["u"].(string)
+
+	// The token turns the anonymous info into the board's own: the first call
+	// answered 204 + /guest (guest landing), so the dashboard and the shard are
+	// only known now. The guest page does the same — it follows the redirect to
+	// /whiteboard/?hash=... and the app asks again. Without this the dashboard
+	// stays empty, subscribe-slide-dashboard joins no room, and peer packets
+	// never reach each other (measured 2026-11-08: both peers logged
+	// "subscribed", zero server-modify-objects in either direction).
+	if state == nil {
+		state = map[string]string{}
+	}
+	if tokenState, terr := t.getWhiteboardInfo(client, hash); terr != nil {
+		utils.Debugf("[BOARDS] board info with token failed: %v", terr)
+	} else {
+		mergeBoardState(state, tokenState)
+	}
+	if state["dashboard"] == "" {
+		utils.Debugf("[BOARDS] board info names no dashboard; subscribe will carry the presentation only")
+	}
 
 	var cookies []*http.Cookie
 	cookies = append(cookies, jar.Cookies(u)...)
@@ -578,6 +596,17 @@ func reconnectBackoffBoards(n int) time.Duration {
 	}
 	d += time.Duration(mrand.Int63n(int64(d/2) + 1))
 	return d
+}
+
+// mergeBoardState fills dst with the non-empty entries of src. The info reply
+// fetched with the guest token supersedes the anonymous one, but a field the
+// second reply omits must not erase what the first one named.
+func mergeBoardState(dst, src map[string]string) {
+	for k, v := range src {
+		if v != "" {
+			dst[k] = v
+		}
+	}
 }
 
 func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
@@ -951,6 +980,11 @@ func (t *BoardsTransport) handleMessage(sess *boardsSession, raw []byte) {
 
 	if bytes.HasPrefix(raw, []byte("43")) {
 		t.handle431(sess, raw)
+		if bytes.Contains(raw, []byte(`"error"`)) {
+			// Every event goes out with an ack id, so a refusal arrives here
+			// instead of the log; without this a rejected write is silent.
+			utils.Debugf("[BOARDS] event ack error: %s", shortStr(string(raw), 240))
+		}
 		return
 	}
 	if !bytes.HasPrefix(raw, []byte("42[")) {
