@@ -38,7 +38,7 @@ func main() {
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
 	tunDevice := flag.String("tun", "", "Linux only: client mode over an existing TUN device (raw IP, same framing as the Android client; needs an l3 exit node)")
-	transportType := flag.String("transport", "yandex", "Transport type (yandex, vyandex, oneme, mailru)")
+	transportType := flag.String("transport", "yandex", "Transport type (yandex, volga, boards, oneme, mailru, avito, cups, telemost, bitrix24)")
 	codec := flag.String("codec", "batched", "Codec: batched (default, zstd+coalescing) or legacy (per-packet LZ4)")
 	flag.StringVar(&globalDocUrl, "url", "", "Document URL. Required for Yandex/Mailru Docs transport")
 	urlFile := flag.String("url-file", "", "Read the document URL from a file")
@@ -223,6 +223,18 @@ func main() {
 			log.Fatal(err)
 		}
 		inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
+	case "boards", "board":
+		// Yandex Boards: the transport has been in this fork since the upstream
+		// sync but was never reachable from the CLI, so no instance could run it.
+		// It joins a board as a guest with the hash from the share link
+		// (https://boards.yandex.ru/whiteboard/?hash=...) and speaks the same
+		// batched codec as every other carrier.
+		var err error
+		globalDocUrl, err = readRequiredOption(globalDocUrl, *urlFile, "board URL")
+		if err != nil {
+			log.Fatal(err)
+		}
+		inner = yandex.NewBoardsTransport(globalDocUrl, config)
 	case "avito":
 		if !*exitNode {
 			var err error
