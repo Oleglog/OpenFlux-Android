@@ -295,7 +295,9 @@ func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 	if csrf := state["csrf"]; csrf != "" {
 		// wbpost() sends the csrf it got from any earlier /api reply.
 		guestContent["csrf"] = csrf
-	}	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
+	}
+
+	guest, err := t.postAPI(client, hash, "request-guest-token", guestContent)
 	if err != nil {
 		return boardsInfo{}, fmt.Errorf("request-guest-token: %w", err)
 	}
@@ -660,6 +662,12 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 		return dialErr
 	}
 	utils.Debugf("[BOARDS] WS connected: %s (shard %q)", dialed, info.wsHost)
+	if info.wsHost != "" && !strings.Contains(dialed, info.wsHost) {
+		// The room is per shard, so a site-host dial only works if the load
+		// balancer happens to put both peers on one front pod. Say so: the
+		// symptom otherwise is a silently dead tunnel.
+		utils.Debugf("[BOARDS] dialed %s instead of the board's shard %s: peers may land on different pods and never share a room", dialed, info.wsHost)
+	}
 
 	participant := info.userHash
 	creator := info.userHash
@@ -1244,28 +1252,40 @@ func boardsGuestLanding(e *boardsAPIError) bool {
 }
 
 // socketURLs lists the engine.io endpoints to try for this board, best first:
-// the one that worked last time, then the API's shard host, then the site host.
-// The shard from the API goes early because a healthy deployment serves it; the
-// site host is the fallback measured serving the handshake when the shard
-// answered 404 (2026-11-08).
+// the board's own shard host, then the endpoint that worked last time, then the
+// site host.
+//
+// The shard goes first for a reason beyond reachability: a dashboard room is
+// per socket shard. Two guests that dial the site host are load-balanced onto
+// different front pods and never see each other's modify-objects — measured
+// 2026-11-08, two peers on boards.yandex.ru delivered nothing in either
+// direction, the same two peers on socket62.boards.yandex.ru delivered both
+// ways. The shard from get-whiteboard-info is per board, so both peers of a
+// tunnel pick the same one. The site host stays as a last resort for a shard
+// that answers 404, which is how socket33.boards.yandex.ru behaved.
 func (t *BoardsTransport) socketURLs(info boardsInfo) []string {
 	urls := make([]string, 0, 3)
-	add := func(host string) {
-		if host == "" {
+	addURL := func(u string) {
+		if u == "" {
 			return
 		}
-		url := fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", host)
 		for _, have := range urls {
-			if have == url {
+			if have == u {
 				return
 			}
 		}
-		urls = append(urls, url)
+		urls = append(urls, u)
 	}
-	if prev, ok := t.goodSocketURL.Load().(string); ok && prev != "" {
-		urls = append(urls, prev)
+	addHost := func(host string) {
+		if host == "" {
+			return
+		}
+		addURL(fmt.Sprintf("wss://%s/socket.io/?EIO=4&transport=websocket", host))
 	}
-	add(info.wsHost)
-	add(boardsBase)
+	addHost(info.wsHost)
+	if prev, ok := t.goodSocketURL.Load().(string); ok {
+		addURL(prev)
+	}
+	addHost(boardsBase)
 	return urls
 }

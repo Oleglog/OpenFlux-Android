@@ -172,3 +172,34 @@ func TestMergeBoardStateKeepsTokenScopedFields(t *testing.T) {
 		t.Fatalf("dashboard was erased by a reply that did not name one")
 	}
 }
+
+// A dashboard room lives on one socket shard: two guests that dial the site
+// host are load-balanced onto different front pods and never see each other's
+// objects (measured 2026-11-08). So the board's own shard has to be tried
+// first, ahead of whatever endpoint happened to work last time.
+func TestSocketURLsPreferTheBoardsShard(t *testing.T) {
+	tr := &BoardsTransport{}
+	tr.goodSocketURL.Store("wss://boards.yandex.ru/socket.io/?EIO=4&transport=websocket")
+
+	urls := tr.socketURLs(boardsInfo{wsHost: "socket62.boards.yandex.ru"})
+	if len(urls) != 2 {
+		t.Fatalf("socketURLs() = %v, want the shard and the site host", urls)
+	}
+	if urls[0] != "wss://socket62.boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("first candidate = %q, want the board shard", urls[0])
+	}
+	if urls[1] != "wss://boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("second candidate = %q, want the site host", urls[1])
+	}
+
+	// A remembered shard is still tried when the API names another one, and it
+	// is not duplicated.
+	tr.goodSocketURL.Store("wss://socket61.boards.yandex.ru/socket.io/?EIO=4&transport=websocket")
+	urls = tr.socketURLs(boardsInfo{wsHost: "socket62.boards.yandex.ru"})
+	if len(urls) != 3 {
+		t.Fatalf("socketURLs() = %v, want shard, remembered shard and site host", urls)
+	}
+	if urls[1] != "wss://socket61.boards.yandex.ru/socket.io/?EIO=4&transport=websocket" {
+		t.Fatalf("second candidate = %q, want the remembered shard", urls[1])
+	}
+}
