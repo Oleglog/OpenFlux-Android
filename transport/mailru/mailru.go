@@ -275,6 +275,10 @@ type MailruDocsTransport struct {
 	// while one is already in flight.
 	rotating atomic.Bool
 
+	// kickStreak counts consecutive 4004 kicks; nextKickCooldown escalates the
+	// reconnect wait with it so a metered account is not hammered back-to-back.
+	kickStreak atomic.Int32
+
 	// lastDial is the UnixNano at which this transport last started a carrier
 	// dial. rotateCarrier refuses to dial again before mailruDialFloor has
 	// passed since it: the editor API answers a too-frequent dial with http 429
@@ -1264,14 +1268,23 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 		}
 		utils.Infof("[M-DOCS] server disconnectReason (kick #%d, cookies=%v, sent=%d): %.200s",
 			n, t.hasCookies.Load(), sent, text)
-		// 4004 is the anti-abuse message bucket. A cooldown was tried here to let
-		// the bucket refill before reconnecting; it made no observable difference
-		// in the field and cost a dead window on every spurious kick, so the
-		// transport reconnects on the ordinary backoff like upstream does.
-		// mailruKickCooldown stays as the knob to turn it back on.
-		if mailruKickCooldown > 0 && strings.Contains(text, "4004") {
-			t.kickCooldownUntil.Store(time.Now().Add(mailruKickCooldown).UnixNano())
-			utils.Infof("[M-DOCS] 4004 anti-abuse kick; pausing %v before reconnecting", mailruKickCooldown)
+		// 4004 is the anti-abuse message bucket. A flat cooldown was tried here
+		// and measured as a pure loss: it made no difference on a spurious kick
+		// and cost a dead window every time, so the transport keeps reconnecting
+		// on the ordinary backoff for the first kick. What it does not do any
+		// more is hammer a carrier that is already refusing us: measured
+		// 2026-11-07 under sustained load the same document went from 60 frames
+		// on the first connection to 23, then 9 and 10 on the next ones, a kick
+		// every 16 s with a live tunnel in between — reconnecting instantly into
+		// a meter that has not refilled is what keeps it there. From the second
+		// consecutive kick the wait escalates (20 s, 40 s, 80 s ... capped at
+		// 5 min) and a connection that lives for mailruKickStreakResetAge clears
+		// the streak.
+		if strings.Contains(text, "4004") {
+			if wait := t.nextKickCooldown(); wait > 0 {
+				t.kickCooldownUntil.Store(time.Now().Add(wait).UnixNano())
+				utils.Infof("[M-DOCS] 4004 anti-abuse kick; waiting %v before the next dial (streak %d)", wait, t.kickStreak.Load())
+			}
 		}
 		return
 	}
@@ -1457,14 +1470,54 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 	t.connectToDoc(next)
 }
 
-// mailruKickCooldown is how long the transport waits after an anti-abuse 4004
-// kick before opening a new carrier connection.
+// mailruKickCooldown is how long the transport waits after the FIRST anti-abuse
+// 4004 kick on a fresh carrier. 0 keeps upstream's behaviour: reconnect on the
+// ordinary backoff, because a single kick is usually a spent message bucket and
+// the next connection starts with a full one.
 //
-// 0 (disabled) matches upstream, which reconnects on the ordinary backoff. The
-// cooldown was added on the theory that an immediate reconnect lands on a
-// budget the kick already drained; it made no observable difference in the
-// field, and a 30s dead window is a real cost when the kick was spurious.
+// Repeated kicks are a different story and are handled by nextKickCooldown: a
+// document that kicks every few seconds is metering the account, and dialling
+// straight back into it is what keeps the account in that state.
 const mailruKickCooldown = 0 * time.Second
+
+const (
+	// mailruKickBackoffBase is the wait applied from the second consecutive 4004
+	// kick, doubled for every further one up to mailruKickBackoffMax.
+	mailruKickBackoffBase = 20 * time.Second
+	// mailruKickBackoffMax caps that escalation at five minutes: past this the
+	// account is being metered hard enough that the tunnel should sit quiet
+	// rather than spend its whole allowance on dials.
+	mailruKickBackoffMax = 5 * time.Minute
+	// mailruKickStreakResetAge is how long a connection must stay usable to
+	// count as recovery and clear the escalation.
+	mailruKickStreakResetAge = 90 * time.Second
+)
+
+// nextKickCooldown records a 4004 kick and returns how long to stay off the
+// carrier before the next dial. The first kick of a streak returns zero so a
+// spurious kick costs nothing; from the second on it doubles, capped.
+func (t *MailruDocsTransport) nextKickCooldown() time.Duration {
+	// A connection that survived the streak reset window means the meter
+	// refilled: start counting again from the first kick.
+	if start := t.sessionStart.Load(); start != 0 && time.Since(time.Unix(0, start)) >= mailruKickStreakResetAge {
+		t.kickStreak.Store(0)
+	}
+	streak := t.kickStreak.Add(1)
+	if streak <= 1 {
+		return mailruKickCooldown
+	}
+	wait := mailruKickBackoffBase
+	for i := int32(2); i < streak; i++ {
+		wait *= 2
+		if wait >= mailruKickBackoffMax {
+			return mailruKickBackoffMax
+		}
+	}
+	if wait > mailruKickBackoffMax {
+		return mailruKickBackoffMax
+	}
+	return wait
+}
 
 // mailruRateLimitBackoff is how long the transport waits after the carrier
 // answers a WebSocket upgrade with 429 (Too Many Requests). Mail.ru meters how

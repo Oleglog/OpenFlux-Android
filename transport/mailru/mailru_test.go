@@ -126,21 +126,47 @@ func TestRotationAppliesToAuthenticatedSessions(t *testing.T) {
 	}
 }
 
-// Test4004CooldownStaysOffByDefault pins the knob: upstream reconnects on the
-// ordinary backoff, and the cooldown that was tried here made no observable
-// difference while costing a 30 s dead window on every kick. It must stay
-// reachable (behind the constant) but disabled.
-func Test4004CooldownStaysOffByDefault(t *testing.T) {
+// Test4004CooldownEscalatesOnlyOnRepeatedKicks pins the two halves of the
+// decision measured on 2026-11-07: a single kick costs nothing (the next
+// connection starts with a full budget, so a flat cooldown was a pure loss), but
+// a document that kicks back-to-back is metering the account, and dialling
+// straight back into it is what keeps it in that state (60 frames on the first
+// connection, then 23, then 9 and 10, one kick every 16 s with a live tunnel in
+// between).
+func Test4004CooldownEscalatesOnlyOnRepeatedKicks(t *testing.T) {
 	src := string(readTransportSource(t, "mailru.go"))
-	if !strings.Contains(src, "mailruKickCooldown > 0 && strings.Contains(text, \"4004\")") {
-		t.Fatal("the 4004 cooldown must stay behind its knob so it can be re-enabled")
+	if !strings.Contains(src, "nextKickCooldown") {
+		t.Fatal("the 4004 handler must escalate the reconnect wait on repeated kicks")
 	}
 	if !strings.Contains(src, "wait > d") {
 		t.Fatal("scheduleReconnect ignores the 4004 cooldown")
 	}
 	if mailruKickCooldown != 0 {
-		t.Fatalf("kick cooldown = %v; upstream reconnects on the ordinary backoff and the "+
-			"cooldown made no observable difference", mailruKickCooldown)
+		t.Fatalf("first-kick cooldown = %v; a single kick must not cost a dead window", mailruKickCooldown)
+	}
+
+	transport := &MailruDocsTransport{}
+	transport.sessionStart.Store(time.Now().Add(-5 * time.Minute).UnixNano())
+	if got := transport.nextKickCooldown(); got != 0 {
+		t.Fatalf("first kick waited %v, want 0", got)
+	}
+	if got := transport.nextKickCooldown(); got != mailruKickBackoffBase {
+		t.Fatalf("second kick waited %v, want %v", got, mailruKickBackoffBase)
+	}
+	if got := transport.nextKickCooldown(); got != 2*mailruKickBackoffBase {
+		t.Fatalf("third kick waited %v, want %v", got, 2*mailruKickBackoffBase)
+	}
+	for i := 0; i < 10; i++ {
+		transport.nextKickCooldown()
+	}
+	if got := transport.nextKickCooldown(); got != mailruKickBackoffMax {
+		t.Fatalf("long streak waited %v, want the %v cap", got, mailruKickBackoffMax)
+	}
+
+	// A connection that lived past the reset window clears the escalation.
+	transport.sessionStart.Store(time.Now().Add(-mailruKickStreakResetAge - time.Second).UnixNano())
+	if got := transport.nextKickCooldown(); got != 0 {
+		t.Fatalf("kick after a healthy connection waited %v, want 0", got)
 	}
 }
 
