@@ -72,7 +72,12 @@ func DefaultVolgaConfig() VolgaConfig {
 	batchSize := envIntDefault("OPENFLUX_VOLGA_BATCH", 10)
 	batchTimeout := time.Duration(envIntDefault("OPENFLUX_VOLGA_BATCH_TIMEOUT_MS", 20)) * time.Millisecond
 	batchMaxBytes := envIntDefault("OPENFLUX_VOLGA_BATCH_BYTES", 24*1024)
-	workers := envIntDefault("OPENFLUX_VOLGA_WORKERS", 1)
+	// Three relay workers, measured on the stand with a 4-minute soak per point:
+	// 1 worker 6.6-6.9 s per page, 2 workers 5.98 s, 3 workers 4.88 and 5.46 s,
+	// 5 workers 5.25 s with the relay answering 429 in bursts. One worker
+	// serialises every batch behind a single HTTP round trip, so parallelism is
+	// the only lever left on latency for this carrier.
+	workers := envIntDefault("OPENFLUX_VOLGA_WORKERS", 3)
 	requestInterval := time.Duration(envIntDefault("OPENFLUX_VOLGA_REQUEST_INTERVAL_MS", 20)) * time.Millisecond
 	return VolgaConfig{
 		MaxIdleConnsPerHost: 2000,
