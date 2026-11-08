@@ -1,6 +1,7 @@
 package cupsonline
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -109,5 +110,73 @@ func TestLiveRooms(t *testing.T) {
 	alive, total := tr.liveRooms()
 	if alive != 2 || total != 3 {
 		t.Fatalf("liveRooms() = %d/%d, want 2/3", alive, total)
+	}
+}
+
+// The upper batcher must not fall back to its 5 ms window: on a 10-25 KB/s
+// carrier that ships near-empty objects, and the phone's log showed exactly
+// that (rtx 492 > tx 421, loss 27-71%, a "4th send" every second).
+func TestPreferredBatchLingerIsNotTheFiveMillisecondDefault(t *testing.T) {
+	t.Parallel()
+	tr := &CupsonlineTransport{config: DefaultCupsonlineConfig()}
+	if got := tr.PreferredBatchLingerMs(); got < 100 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want >= 100", got)
+	}
+}
+
+// OPENFLUX_CUPS_BATCH_LINGER_MS is the knob the stand uses.
+func TestBatchLingerEnvOverride(t *testing.T) {
+	t.Setenv("OPENFLUX_CUPS_BATCH_LINGER_MS", "40")
+	if got := DefaultCupsonlineConfig().BatchLingerMs; got != 40 {
+		t.Fatalf("BatchLingerMs = %d, want 40", got)
+	}
+	t.Setenv("OPENFLUX_CUPS_BATCH_LINGER_MS", "0")
+	if got := DefaultCupsonlineConfig().BatchLingerMs; got != 100 {
+		t.Fatalf("BatchLingerMs with a zero value = %d, want the 100 ms default", got)
+	}
+}
+
+// A longer window must not push the upper batch over the carrier's own batch
+// limit: the batcher fills up to PreferredBatchBytes and adds a 2-byte length
+// per packet (64 packets at most), and the carrier takes BatchMaxBytes.
+func TestPreferredBatchFitsTheCarrierLimit(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultCupsonlineConfig()
+	tr := &CupsonlineTransport{config: cfg}
+	const maxPackets = 64
+	if got := tr.PreferredBatchBytes(); got+2*maxPackets > cfg.BatchMaxBytes {
+		t.Fatalf("preferred batch %d + framing %d > carrier limit %d", got, 2*maxPackets, cfg.BatchMaxBytes)
+	}
+}
+
+// A pong must not wait behind the data path: the ping handler only raises a
+// flag, so a held write lock cannot keep it from returning (a pong stuck
+// behind queued writes is the 3012 "no pong" close seen on the stand).
+func TestPingDoesNotBlockOnTheWritePath(t *testing.T) {
+	t.Parallel()
+	w := &cupsWS{
+		config: DefaultCupsonlineConfig(),
+		pongCh: make(chan struct{}, 1),
+		ctx:    context.Background(),
+		stats:  &channelStats{},
+	}
+	w.writeMu.Lock() // a data write is in progress
+	defer w.writeMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		w.handleReply([]byte("{}"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleReply blocked on the write path while answering a ping")
+	}
+	if !w.pongDue.Load() {
+		t.Fatal("pong was not marked due")
+	}
+	if len(w.pongCh) != 1 {
+		t.Fatal("pong was not handed to the pong loop")
 	}
 }
