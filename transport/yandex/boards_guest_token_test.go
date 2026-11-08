@@ -338,7 +338,7 @@ func TestBoardsPacerHalvesOnRateLimitAndFloors(t *testing.T) {
 func TestBoardsPacerChargesTheObjectBytes(t *testing.T) {
 	ceilingPacer := func() *boardsPacer {
 		p := newBoardsPacerOn(&fakeBoardsClock{at: time.Unix(1_700_000_000, 0)})
-		for i := 0; i < 200; i++ {
+		for i := 0; i < 400; i++ {
 			p.onSuccess()
 		}
 		if got := p.currentRate(); got != boardsRateMax {
