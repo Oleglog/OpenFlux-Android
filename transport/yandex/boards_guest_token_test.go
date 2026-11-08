@@ -478,6 +478,32 @@ func TestBoardsRetriesAreBounded(t *testing.T) {
 	}
 }
 
+// A write nobody acknowledged is retried after the timeout, but a drop is not: it
+// costs a full-size event, and an object left on the board is clutter rather than
+// lost payload.
+func TestBoardsUnacknowledgedDropIsNotResent(t *testing.T) {
+	tr := &BoardsTransport{}
+	sess := newTestBoardsSession()
+	old := time.Now().Add(-2 * boardsAckTimeout)
+	event := buildDropObjects([]map[string]interface{}{boardDropObject("obj", 32)}, "participant-hash")
+	sess.trackPending(20, boardsOutgoing{drop: event, at: old})
+	sess.trackPending(21, boardsOutgoing{pkt: []byte("payload"), at: old})
+
+	tr.requeueExpired(sess)
+
+	if retry, ok := sess.takeRetry(); !ok {
+		t.Fatal("a payload with no ack was not retried")
+	} else if string(retry.pkt) != "payload" {
+		t.Fatalf("retried %q, want the payload write", retry.pkt)
+	}
+	if _, ok := sess.takeRetry(); ok {
+		t.Fatal("an unacknowledged drop was resent")
+	}
+	if got := sess.pendingCount(); got != 0 {
+		t.Fatalf("pending = %d, want both expired writes forgotten", got)
+	}
+}
+
 // The in-flight set is bounded by bytes as well as by count: this code also runs
 // inside the phone, where 200 unacknowledged 48 KiB writes would be an OOM.
 func TestBoardsPendingSetIsBoundedAndCountsEvictions(t *testing.T) {
