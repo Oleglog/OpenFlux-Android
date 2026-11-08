@@ -1,10 +1,12 @@
 package yandex
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The bodies below are verbatim replies of boards.yandex.ru on 2026-11-07 through
@@ -206,14 +208,372 @@ func TestSocketURLsPreferTheBoardsShard(t *testing.T) {
 
 // One modify-objects event carries the whole batch, and the board refuses a
 // value above 48 KiB of payload (PAYLOAD_TOO_LARGE, measured 2026-11-08), so
-// the batch hint must stay under that ceiling or a burst loses its tail.
+// the batch hint must stay under that ceiling or a burst loses its tail. The
+// linger window is what decides how many objects a second the board sees: at the
+// old 20 ms a browsing tunnel wrote ~50 objects a second and a large share of
+// them came back RATE_LIMITED.
 func TestBoardsBatchFitsOneObject(t *testing.T) {
 	if got := (&BoardsTransport{}).PreferredBatchBytes(); got <= 0 || got > boardsMaxObjectBytes {
 		t.Fatalf("PreferredBatchBytes() = %d, want it within (0, %d]", got, boardsMaxObjectBytes)
 	}
-	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 0 {
-		t.Fatalf("PreferredBatchLingerMs() = %d, want non-negative", got)
+	if got := (&BoardsTransport{}).PreferredBatchBytes(); got != boardsBatchBytes {
+		t.Fatalf("PreferredBatchBytes() = %d, want the board's own ceiling of %d", got, boardsBatchBytes)
 	}
+	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 100 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want at least 100 ms: a shorter window turns the same bytes into more objects per second", got)
+	}
+}
+
+// A drop-objects event echoes the value it deletes, so the budget for one batched
+// deletion has to hold one full-size object on its own: the board's ceiling is
+// 48 KiB of payload, i.e. 65536 base64 characters in the value.
+func TestBoardsDropBudgetHoldsOneFullObject(t *testing.T) {
+	if boardsDropEventBytes <= 65536 {
+		t.Fatalf("boardsDropEventBytes = %d, want more than the 65536 value characters of a full-size object", boardsDropEventBytes)
+	}
+	if boardsDropMaxObjects > 256 {
+		t.Fatalf("boardsDropMaxObjects = %d, want a bounded batch", boardsDropMaxObjects)
+	}
+}
+
+// ---- запись: темп, отказы и склейка ----
+
+type fakeBoardsClock struct{ at time.Time }
+
+func (c *fakeBoardsClock) now() time.Time { return c.at }
+
+func newBoardsPacerOn(clk *fakeBoardsClock) *boardsPacer {
+	return &boardsPacer{now: clk.now}
+}
+
+// The pace starts conservative and climbs one acknowledged object at a time up
+// to the ceiling, so the board is probed rather than flooded.
+func TestBoardsPacerStartsSlowAndClimbsToTheCeiling(t *testing.T) {
+	clk := &fakeBoardsClock{at: time.Unix(1_700_000_000, 0)}
+	p := newBoardsPacerOn(clk)
+
+	if got := p.currentRate(); got != boardsRateStart {
+		t.Fatalf("currentRate() = %v, want the conservative start %v", got, boardsRateStart)
+	}
+	// The first write may go at once; the following slots are one interval apart.
+	if d := p.reserve(); d != 0 {
+		t.Fatalf("first reserve() = %v, want no wait", d)
+	}
+	if d := p.reserve(); d != 200*time.Millisecond {
+		t.Fatalf("second reserve() = %v, want one 200 ms interval at %v/s", d, boardsRateStart)
+	}
+	if d := p.reserve(); d != 400*time.Millisecond {
+		t.Fatalf("third reserve() = %v, want the second interval queued behind the first", d)
+	}
+
+	for i := 0; i < 200; i++ {
+		p.onSuccess()
+	}
+	if got := p.currentRate(); got != boardsRateMax {
+		t.Fatalf("currentRate() after 200 acknowledged objects = %v, want the ceiling %v", got, boardsRateMax)
+	}
+}
+
+// A refusal halves the pace and holds the next slot back; the floor keeps the
+// tunnel moving instead of stopping it.
+func TestBoardsPacerHalvesOnRateLimitAndFloors(t *testing.T) {
+	clk := &fakeBoardsClock{at: time.Unix(1_700_000_000, 0)}
+	p := newBoardsPacerOn(clk)
+	p.reserve()
+
+	first := p.onRateLimited()
+	if first >= boardsRateStart {
+		t.Fatalf("rate after RATE_LIMITED = %v, want it below the start %v", first, boardsRateStart)
+	}
+	if d := p.reserve(); d < boardsRateHold {
+		t.Fatalf("reserve() after RATE_LIMITED = %v, want at least the %v hold", d, boardsRateHold)
+	}
+
+	for i := 0; i < 20; i++ {
+		p.onRateLimited()
+	}
+	if got := p.currentRate(); got != boardsRateMin {
+		t.Fatalf("currentRate() after repeated refusals = %v, want the floor %v", got, boardsRateMin)
+	}
+
+	// Recovery is additive and slow: one acknowledged object does not undo a cut.
+	before := p.currentRate()
+	p.onSuccess()
+	if after := p.currentRate(); after != before+boardsRateGrow {
+		t.Fatalf("rate after one success = %v, want %v", after, before+boardsRateGrow)
+	}
+}
+
+// A board whose budget is below the floor cannot be met by halving the rate any
+// further, so the hold itself backs off instead of letting a refusal storm run.
+func TestBoardsPacerBacksOffTheHoldAtTheFloor(t *testing.T) {
+	clk := &fakeBoardsClock{at: time.Unix(1_700_000_000, 0)}
+	p := newBoardsPacerOn(clk)
+	p.reserve()
+	for i := 0; i < 6; i++ {
+		p.onRateLimited()
+	}
+	if got := p.currentRate(); got != boardsRateMin {
+		t.Fatalf("currentRate() = %v, want the floor %v", got, boardsRateMin)
+	}
+	if d := p.reserve(); d < boardsRateHoldMax {
+		t.Fatalf("reserve() at the floor = %v, want at least the %v backoff ceiling", d, boardsRateHoldMax)
+	}
+}
+
+// An ack answers a specific event by id: the id is what ties a refused write back
+// to the payload it carried.
+func TestParseBoardsAckCarriesTheEventID(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   string
+		known bool
+		id    int64
+		isErr bool
+		code  int
+		sec   string
+	}{
+		{"rate limited", `4317[{"error":{"code":200,"securityCode":"RATE_LIMITED"}}]`, true, 17, true, 200, "RATE_LIMITED"},
+		{"id zero", `430[{"result":true}]`, true, 0, false, 0, ""},
+		{"plain ack", `433[{"result":true}]`, true, 3, false, 0, ""},
+		{"bare error", `435[{"error":{"code":0}}]`, true, 5, true, 0, ""},
+		{"no id", `43[{"result":true}]`, false, 0, false, 0, ""},
+		{"just the prefix", `43`, false, 0, false, 0, ""},
+		{"not an ack", `42["dashboard",{"action":"x"}]`, false, 0, false, 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ack := parseBoardsAck([]byte(c.raw))
+			if ack.Known != c.known {
+				t.Fatalf("Known = %v, want %v", ack.Known, c.known)
+			}
+			if ack.ID != c.id {
+				t.Fatalf("ID = %d, want %d", ack.ID, c.id)
+			}
+			if ack.Error != c.isErr || ack.Code != c.code || ack.Security != c.sec {
+				t.Fatalf("ack = %+v, want error=%v code=%d security=%q", ack, c.isErr, c.code, c.sec)
+			}
+		})
+	}
+}
+
+func newTestBoardsSession() *boardsSession {
+	participant := "participant-hash"
+	creator := "creator-hash"
+	sess := &boardsSession{
+		Queue:   make(chan []byte, 8),
+		pending: make(map[int64]boardsOutgoing),
+		retryCh: make(chan struct{}, 1),
+		dropCh:  make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+	}
+	sess.participant.Store(&participant)
+	sess.creatorHash.Store(&creator)
+	return sess
+}
+
+// The whole point of the change: a RATE_LIMITED ack returns the payload to the
+// writer. Before this the payload was already dropped and `dropped 1 objects`
+// was the only trace.
+func TestBoardsRateLimitedAckRetriesInsteadOfDroppingThePayload(t *testing.T) {
+	tr := &BoardsTransport{}
+	sess := newTestBoardsSession()
+	payload := []byte("user traffic that must not be lost")
+	sess.trackPending(3, boardsOutgoing{pkt: payload, at: time.Now()})
+
+	tr.handleAck(sess, []byte(`433[{"error":{"code":200,"securityCode":"RATE_LIMITED"}}]`))
+
+	if got := tr.statRefused.Load(); got != 1 {
+		t.Fatalf("refused = %d, want 1", got)
+	}
+	if got := tr.statRetried.Load(); got != 1 {
+		t.Fatalf("retried = %d, want 1", got)
+	}
+	if got := tr.statSent.Load(); got != 0 {
+		t.Fatalf("sent = %d, want 0: a refusal is not a delivery", got)
+	}
+	if got := tr.statDroppedDead.Load(); got != 0 {
+		t.Fatalf("dropped_dead = %d, want 0: a rate limit is retryable", got)
+	}
+	if got := sess.pendingCount(); got != 0 {
+		t.Fatalf("pending = %d, want the refused write taken out of the in-flight set", got)
+	}
+	retry, ok := sess.takeRetry()
+	if !ok {
+		t.Fatal("no retry queued: the payload of a refused write was lost")
+	}
+	if string(retry.pkt) != string(payload) {
+		t.Fatalf("retry carries %q, want the refused payload %q", retry.pkt, payload)
+	}
+	if retry.tries != 1 {
+		t.Fatalf("retry tries = %d, want 1", retry.tries)
+	}
+	if got := tr.pacer.currentRate(); got >= boardsRateStart {
+		t.Fatalf("pace = %v/s, want it cut below the start after a refusal", got)
+	}
+}
+
+// A plain ack is a delivery: counted, and nothing is requeued.
+func TestBoardsPlainAckCountsTheObjectAsSent(t *testing.T) {
+	tr := &BoardsTransport{}
+	sess := newTestBoardsSession()
+	sess.trackPending(4, boardsOutgoing{pkt: []byte("payload"), at: time.Now()})
+
+	tr.handleAck(sess, []byte(`434[{"result":true}]`))
+
+	if got := tr.statSent.Load(); got != 1 {
+		t.Fatalf("sent = %d, want 1", got)
+	}
+	if _, ok := sess.takeRetry(); ok {
+		t.Fatal("a delivered object was requeued")
+	}
+	if got := sess.pendingCount(); got != 0 {
+		t.Fatalf("pending = %d, want 0", got)
+	}
+}
+
+// PAYLOAD_TOO_LARGE is our own frame-size bug and NETWORK_TRANSPORT is a key
+// mismatch between the peers: both are permanent for the same bytes, and merging
+// them into one counter would make the two indistinguishable in the log.
+func TestBoardsPermanentRefusalsStaySeparateAndAreNotRetried(t *testing.T) {
+	tr := &BoardsTransport{}
+	sess := newTestBoardsSession()
+	sess.trackPending(10, boardsOutgoing{pkt: []byte("a"), at: time.Now()})
+	tr.handleAck(sess, []byte(`4310[{"error":{"code":200,"securityCode":"PAYLOAD_TOO_LARGE"}}]`))
+
+	sess.trackPending(11, boardsOutgoing{pkt: []byte("b"), at: time.Now()})
+	tr.handleAck(sess, []byte(`4311[{"error":{"code":200,"securityCode":"NETWORK_TRANSPORT"}}]`))
+
+	if got := tr.statTooLarge.Load(); got != 1 {
+		t.Fatalf("too_large = %d, want 1", got)
+	}
+	if got := tr.statKeyMismatch.Load(); got != 1 {
+		t.Fatalf("key_mismatch = %d, want 1", got)
+	}
+	if got := tr.statRetried.Load(); got != 0 {
+		t.Fatalf("retried = %d, want 0: the same bytes meet the same refusal", got)
+	}
+	if got := tr.statDroppedDead.Load(); got != 2 {
+		t.Fatalf("dropped_dead = %d, want 2", got)
+	}
+}
+
+// A retry is bounded: an object the board keeps refusing is counted once and
+// let go, so it cannot pin the writer forever.
+func TestBoardsRetriesAreBounded(t *testing.T) {
+	tr := &BoardsTransport{}
+	sess := newTestBoardsSession()
+	sess.trackPending(12, boardsOutgoing{pkt: []byte("payload"), tries: boardsMaxTries, at: time.Now()})
+
+	tr.handleAck(sess, []byte(`4312[{"error":{"code":200,"securityCode":"RATE_LIMITED"}}]`))
+
+	if got := tr.statDroppedDead.Load(); got != 1 {
+		t.Fatalf("dropped_dead = %d, want 1", got)
+	}
+	if got := tr.statRetried.Load(); got != 0 {
+		t.Fatalf("retried = %d, want 0 after the retry cap", got)
+	}
+	if _, ok := sess.takeRetry(); ok {
+		t.Fatal("an object over the retry cap was requeued")
+	}
+}
+
+// The in-flight set is bounded by bytes as well as by count: this code also runs
+// inside the phone, where 200 unacknowledged 48 KiB writes would be an OOM.
+func TestBoardsPendingSetIsBoundedAndCountsEvictions(t *testing.T) {
+	sess := newTestBoardsSession()
+	big := boardsOutgoing{pkt: make([]byte, 48000), at: time.Now()}
+	evicted := 0
+	for i := 0; i < boardsMaxPendingBytes/48000+5; i++ {
+		evicted += len(sess.trackPending(int64(i), big))
+	}
+	if evicted == 0 {
+		t.Fatal("no write was evicted: the byte cap does not bind")
+	}
+	if got := sess.pendingByteCount(); got > boardsMaxPendingBytes {
+		t.Fatalf("pending bytes = %d, want at most %d", got, boardsMaxPendingBytes)
+	}
+	if got := sess.pendingCount(); got > boardsMaxPending {
+		t.Fatalf("pending count = %d, want at most %d", got, boardsMaxPending)
+	}
+}
+
+// Many received objects become one drop-objects event per window: at one event
+// per received object a busy tunnel spent half its budget on deletions.
+func TestBoardsDeletionsAreCoalesced(t *testing.T) {
+	sess := newTestBoardsSession()
+	for i := 0; i < 5; i++ {
+		sess.queueDrops([]map[string]interface{}{boardDropObject("obj", 64)})
+	}
+	if got := sess.dropsPending(); got != 5 {
+		t.Fatalf("queued = %d, want 5", got)
+	}
+	event, ok := sess.takeDrops("participant-hash")
+	if !ok {
+		t.Fatal("takeDrops() returned nothing")
+	}
+	objects := dropEventObjects(t, event)
+	if len(objects) != 5 {
+		t.Fatalf("one drop-objects event carries %d objects, want all 5", len(objects))
+	}
+	if got := sess.dropsPending(); got != 0 {
+		t.Fatalf("still queued after the batch = %d, want 0", got)
+	}
+	if body, err := json.Marshal(event); err != nil || len(body) > boardsDropEventBytes {
+		t.Fatalf("drop event is %d bytes, want at most %d", len(body), boardsDropEventBytes)
+	}
+	if got := event["action"]; got != "drop-objects" {
+		t.Fatalf("action = %v, want drop-objects", got)
+	}
+}
+
+// A batch never exceeds the measured event budget, and a full-size object goes
+// alone instead of taking the event over the board's ceiling.
+func TestBoardsDropBatchIsCutByItsMarshalledSize(t *testing.T) {
+	sess := newTestBoardsSession()
+	full := strings.Repeat("A", 65536) // the longest value the board accepts
+	sess.queueDrops([]map[string]interface{}{
+		boardDropObjectWithValue("big-1", full),
+		boardDropObjectWithValue("big-2", full),
+	})
+
+	event, ok := sess.takeDrops("participant-hash")
+	if !ok {
+		t.Fatal("takeDrops() returned nothing")
+	}
+	if got := len(dropEventObjects(t, event)); got != 1 {
+		t.Fatalf("batch carries %d full-size objects, want 1", got)
+	}
+	if body, err := json.Marshal(event); err != nil || len(body) > boardsDropEventBytes {
+		t.Fatalf("drop event is %d bytes, want at most %d", len(body), boardsDropEventBytes)
+	}
+	if got := sess.dropsPending(); got != 1 {
+		t.Fatalf("remaining = %d, want the second object left for the next window", got)
+	}
+}
+
+func boardDropObject(id string, valueChars int) map[string]interface{} {
+	return boardDropObjectWithValue(id, strings.Repeat("A", valueChars))
+}
+
+func boardDropObjectWithValue(id, value string) map[string]interface{} {
+	return map[string]interface{}{
+		"_attributes_": map[string]interface{}{"id": id, "value": value},
+		"hash":         id,
+	}
+}
+
+func dropEventObjects(t *testing.T, event map[string]interface{}) []map[string]interface{} {
+	t.Helper()
+	data, ok := event["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("drop event has no data: %v", event)
+	}
+	objects, ok := data["objects"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("drop event has no objects: %v", data)
+	}
+	return objects
 }
 
 // The board decodes an object's value and refuses one that carries visible
