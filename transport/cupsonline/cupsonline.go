@@ -636,6 +636,11 @@ type cupsWS struct {
 
 	sendQueue chan []byte
 
+	// pongDue/pongCh move the reply to a server ping off the data path: the
+	// read goroutine only raises the flag, pongLoop writes the "{}" itself, so
+	// a pong waits for at most one data write instead of a queue of them.
+	pongDue atomic.Bool
+	pongCh  chan struct{}
 
 	stats *channelStats
 }
@@ -645,7 +650,12 @@ func (w *cupsWS) nextID() int64 { return w.rpcID.Add(1) }
 func (w *cupsWS) auth() *cupsAuth { return w.authPtr.Load() }
 
 func (w *cupsWS) writeRaw(data []byte) error {
-
+	// A queued pong goes first: it is the server's keepalive check, and holding
+	// it behind a burst of data writes is how a busy channel gets closed with
+	// 3012 "no pong". The wait is bounded - data must not starve either.
+	for i := 0; i < 100 && w.pongDue.Load(); i++ {
+		time.Sleep(100 * time.Microsecond)
+	}
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 	if w.conn == nil {
@@ -662,6 +672,26 @@ func (w *cupsWS) writeRaw(data []byte) error {
 	return nil
 }
 
+// pongLoop answers server pings on its own path, so a pong waits for at most
+// one data write instead of for a whole queue of them.
+func (w *cupsWS) pongLoop() {
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-w.pongCh:
+			if !w.pongDue.CompareAndSwap(true, false) {
+				continue
+			}
+			w.writeMu.Lock()
+			if w.conn != nil {
+				w.conn.SetWriteDeadline(time.Now().Add(pongWriteTimeout))
+				_ = w.conn.WriteMessage(websocket.TextMessage, []byte("{}"))
+			}
+			w.writeMu.Unlock()
+		}
+	}
+}
 
 func (w *cupsWS) writeJSON(v interface{}) error {
 	data, err := json.Marshal(v)
@@ -694,7 +724,9 @@ const allPoolDeadRetryMax = 2 * time.Minute
 // a dead pair, not a slow one.
 const peerSilentAfter = 60 * time.Second
 
-
+// pongWriteTimeout bounds the pong write: the server's ping interval is tens of
+// seconds, and a pong stuck on a wedged socket must not sit in pongLoop.
+const pongWriteTimeout = 2 * time.Second
 
 func (w *cupsWS) run() {
 	delay := w.config.ReconnectMinDelay
@@ -1131,7 +1163,14 @@ func (w *cupsWS) handleMessage(raw []byte) {
 // a batch from the peer.
 func (w *cupsWS) handleReply(raw []byte) {
 	if isPing(raw) {
-		_ = w.writeRaw([]byte("{}"))
+		// Never write the pong here: this goroutine also carries the data the
+		// tunnel arrives with, and a pong that waits for that write is the
+		// 3012 "no pong" close seen on the stand.
+		w.pongDue.Store(true)
+		select {
+		case w.pongCh <- struct{}{}:
+		default:
+		}
 		return
 	}
 	var obj map[string]interface{}
@@ -1343,6 +1382,7 @@ func (t *CupsonlineTransport) Start() error {
 			config:      t.config,
 			ctx:         t.ctx,
 			sendQueue:   make(chan []byte, t.config.SendQueueSize),
+			pongCh:      make(chan struct{}, 1),
 			stats:       &channelStats{idx: i, roomUUID: s.id},
 		}
 		// Command ids 1 and 2 are connect and subscribe.
@@ -1366,6 +1406,7 @@ func (t *CupsonlineTransport) Start() error {
 	for _, ws := range wss {
 		go ws.run()
 		go ws.sendLoop()
+		go ws.pongLoop()
 	}
 
 	utils.Debugf("[CUPS] transport started: %d channels", len(t.wss))
