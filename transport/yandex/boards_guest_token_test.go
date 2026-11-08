@@ -350,7 +350,8 @@ func TestBoardsPacerChargesTheObjectBytes(t *testing.T) {
 	events := ceilingPacer()
 	events.reserve(0)
 	eventGap := events.reserve(0)
-	wantEvent := time.Duration(float64(time.Second) / boardsRateMax)
+	eventsPerSecond := float64(boardsRateMax)
+	wantEvent := time.Duration(float64(time.Second) / eventsPerSecond)
 	if eventGap < wantEvent*95/100 || eventGap > wantEvent*105/100 {
 		t.Fatalf("object slot = %v, want ~%v at the %v/s ceiling", eventGap, wantEvent, boardsRateMax)
 	}
@@ -358,7 +359,8 @@ func TestBoardsPacerChargesTheObjectBytes(t *testing.T) {
 	bytes := ceilingPacer()
 	bytes.reserve(boardsBatchBytes)
 	byteGap := bytes.reserve(boardsBatchBytes)
-	wantBytes := time.Duration(float64(boardsBatchBytes) / boardsRateBytes * float64(time.Second))
+	bytesPerSecond := boardsRateBytes
+	wantBytes := time.Duration(float64(boardsBatchBytes) / bytesPerSecond * float64(time.Second))
 	if byteGap < wantBytes*95/100 || byteGap > wantBytes*105/100 {
 		t.Fatalf("full-object slot = %v, want ~%v (%d bytes at %v B/s)", byteGap, wantBytes, boardsBatchBytes, boardsRateBytes)
 	}
