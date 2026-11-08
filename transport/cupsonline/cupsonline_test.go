@@ -111,3 +111,40 @@ func TestLiveRooms(t *testing.T) {
 		t.Fatalf("liveRooms() = %d/%d, want 2/3", alive, total)
 	}
 }
+
+// The upper batcher must not fall back to its 5 ms window: on a 10-25 KB/s
+// carrier that ships near-empty objects, and the phone's log showed exactly
+// that (rtx 492 > tx 421, loss 27-71%, a "4th send" every second).
+func TestPreferredBatchLingerIsNotTheFiveMillisecondDefault(t *testing.T) {
+	t.Parallel()
+	tr := &CupsonlineTransport{config: DefaultCupsonlineConfig()}
+	if got := tr.PreferredBatchLingerMs(); got < 100 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want >= 100", got)
+	}
+}
+
+// OPENFLUX_CUPS_BATCH_LINGER_MS is the knob the stand uses.
+func TestBatchLingerEnvOverride(t *testing.T) {
+	t.Setenv("OPENFLUX_CUPS_BATCH_LINGER_MS", "40")
+	if got := DefaultCupsonlineConfig().BatchLingerMs; got != 40 {
+		t.Fatalf("BatchLingerMs = %d, want 40", got)
+	}
+	t.Setenv("OPENFLUX_CUPS_BATCH_LINGER_MS", "0")
+	if got := DefaultCupsonlineConfig().BatchLingerMs; got != 100 {
+		t.Fatalf("BatchLingerMs with a zero value = %d, want the 100 ms default", got)
+	}
+}
+
+// A longer window must not push the upper batch over the carrier's own batch
+// limit: the batcher fills up to PreferredBatchBytes and adds a 2-byte length
+// per packet (64 packets at most), and the carrier takes BatchMaxBytes.
+func TestPreferredBatchFitsTheCarrierLimit(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultCupsonlineConfig()
+	tr := &CupsonlineTransport{config: cfg}
+	const maxPackets = 64
+	if got := tr.PreferredBatchBytes(); got+2*maxPackets > cfg.BatchMaxBytes {
+		t.Fatalf("preferred batch %d + framing %d > carrier limit %d", got, 2*maxPackets, cfg.BatchMaxBytes)
+	}
+}
+
