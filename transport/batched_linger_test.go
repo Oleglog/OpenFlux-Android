@@ -7,8 +7,10 @@ import (
 )
 
 // carrierHintStub publishes batch defaults of its own, which the coalescing layer
-// uses unless an env var overrides them.
+// uses unless an env var overrides them. The embedded Transport is never called:
+// these tests only construct the layer, they do not run it.
 type carrierHintStub struct {
+	Transport
 	bytes  int
 	linger int
 }
