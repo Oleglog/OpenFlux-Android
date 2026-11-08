@@ -84,3 +84,14 @@ func (s *StripedRoomTransport) PreferredBatchBytes() int {
 	}
 	return 0
 }
+
+// PreferredBatchLingerMs is the linger half of the same hint. Without it a room
+// carrier that asks for a wide window (Cups: 100 ms) still reaches the batcher
+// as a 5 ms default, and every object leaves almost empty - the retransmit storm
+// that made Cups stall after half a minute was exactly this.
+func (s *StripedRoomTransport) PreferredBatchLingerMs() int {
+	if inner, ok := s.inner.(BatchLingerHinter); ok {
+		return inner.PreferredBatchLingerMs()
+	}
+	return 0
+}
