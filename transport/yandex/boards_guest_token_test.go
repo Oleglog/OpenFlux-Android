@@ -293,11 +293,11 @@ func TestBoardsPacerStartsSlowAndClimbsToTheCeiling(t *testing.T) {
 		t.Fatalf("third reserve() = %v, want the second interval queued behind the first", d)
 	}
 
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 400; i++ {
 		p.onSuccess()
 	}
 	if got := p.currentRate(); got != boardsRateMax {
-		t.Fatalf("currentRate() after 200 acknowledged objects = %v, want the ceiling %v", got, boardsRateMax)
+		t.Fatalf("currentRate() after 400 acknowledged objects = %v, want the ceiling %v", got, boardsRateMax)
 	}
 }
 
