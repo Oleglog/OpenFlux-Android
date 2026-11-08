@@ -728,6 +728,10 @@ const peerSilentAfter = 60 * time.Second
 // seconds, and a pong stuck on a wedged socket must not sit in pongLoop.
 const pongWriteTimeout = 2 * time.Second
 
+// silentRejoinMinInterval paces forced rejoins after a silent peer: a join is
+// two page loads, and a storm of them is what gets this address rate limited.
+const silentRejoinMinInterval = 15 * time.Second
+
 func (w *cupsWS) run() {
 	delay := w.config.ReconnectMinDelay
 	fails := 0
@@ -1322,6 +1326,12 @@ type CupsonlineTransport struct {
 	replMu      sync.Mutex
 	lastReplace time.Time
 
+	// rejoinMu/lastRejoin pace forced rejoins after the stripe reports a silent
+	// peer: a join is two page loads, and a reconnect storm is how this address
+	// gets rate limited.
+	rejoinMu   sync.Mutex
+	lastRejoin time.Time
+
 	statsStart time.Time
 }
 
@@ -1647,6 +1657,40 @@ func (t *CupsonlineTransport) Send(data []byte) error {
 	}
 	t.lastSend.Store(time.Now().UnixNano())
 	return nil
+}
+
+// PeerSilentFor is the stripe telling this carrier that nothing came back for
+// silentFor with inflight pieces in flight: the rooms are open, the peer behind
+// them is not answering. Writing into them only feeds the retransmit storm the
+// relay answers with losses and refusals, so the sockets are dropped: run()
+// rejoins with fresh tokens, and on an exit a room the relay closed is replaced.
+func (t *CupsonlineTransport) PeerSilentFor(silentFor time.Duration, inflight int) {
+	if silentFor < peerSilentAfter {
+		return
+	}
+	now := time.Now()
+	t.rejoinMu.Lock()
+	if !t.lastRejoin.IsZero() && now.Sub(t.lastRejoin) < silentRejoinMinInterval {
+		t.rejoinMu.Unlock()
+		return
+	}
+	t.lastRejoin = now
+	t.rejoinMu.Unlock()
+	utils.Infof("[CUPS] peer silent for %s with %d inflight, backing off and rejoining the rooms",
+		silentFor.Round(time.Millisecond), inflight)
+	for _, ws := range t.wss {
+		ws.dropConn()
+	}
+}
+
+// dropConn closes this channel's socket so run() reconnects it (and, on an
+// exit, replaces a room the relay has closed).
+func (w *cupsWS) dropConn() {
+	w.writeMu.Lock()
+	if w.conn != nil {
+		_ = w.conn.Close()
+	}
+	w.writeMu.Unlock()
 }
 
 // pickRoom returns the next connected room in round-robin order, or nil when
