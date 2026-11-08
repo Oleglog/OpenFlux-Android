@@ -198,11 +198,14 @@ var (
 	ackInterval = envMs("STRIPE_ACK_MS", 10)
 
 	// holeDeadline is how long a hole may hold later frames back before it is
-	// given up on. Retransmission normally fills it in one or two round trips,
-	// but the SFU now and then stops forwarding every lane for a few seconds
-	// (it renegotiates the subscriptions when someone joins or leaves); the
-	// tunnel's TCP waits that out (see tcpMinRTO) and loses nothing.
-	holeDeadline = envMs("STRIPE_HOLE_MS", 5000)
+	// given up on. The phone's session (srtt 300 ms, relay bursts up to
+	// 150 KB/s) skipped 114 of 418 pieces - 21% - because the old 5 s horizon
+	// gave up on holes the sender was still repairing, and every skip costs the
+	// tunnel's TCP a retransmit. 15 s is ~25 round trips: longer than any
+	// reorder this relay produces, still bounded for a genuinely lost piece.
+	// STRIPE_HOLE_MS stays as the older name; STRIPE_REORDER_MS is the knob to
+	// sweep on the stand.
+	holeDeadline = envMs("STRIPE_HOLE_MS", envMs("STRIPE_REORDER_MS", 15000))
 	// CoDel on the shared send queue: when the oldest frame has waited longer
 	// than codelTarget for a whole codelInterval, drop at the head, faster
 	// while it lasts. The carrier's rate swings by half from second to second

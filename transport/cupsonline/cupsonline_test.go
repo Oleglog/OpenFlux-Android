@@ -180,3 +180,23 @@ func TestPingDoesNotBlockOnTheWritePath(t *testing.T) {
 		t.Fatal("pong was not handed to the pong loop")
 	}
 }
+
+// The relay refuses a write with an RPC error reply: no socket close, no ws
+// error, nothing in the log. Before this the refusal was dropped here and the
+// sender kept retransmitting into it blind.
+func TestWriteRefusalIsCounted(t *testing.T) {
+	t.Parallel()
+	w := &cupsWS{config: DefaultCupsonlineConfig(), stats: &channelStats{}}
+
+	w.handleReply([]byte(`{"id":7,"error":{"code":7,"message":"slow down"}}`))
+	if got := w.stats.writeRefused.Load(); got != 1 {
+		t.Fatalf("writeRefused = %d, want 1", got)
+	}
+
+	// A plain reply or a push is not a refusal.
+	w.handleReply([]byte(`{"id":5,"result":{}}`))
+	w.handleReply([]byte(`{"push":{"pub":{"data":{"type":"cursors_update"}}}}`))
+	if got := w.stats.writeRefused.Load(); got != 1 {
+		t.Fatalf("writeRefused = %d after non-error frames, want 1", got)
+	}
+}
