@@ -219,8 +219,35 @@ func TestBoardsBatchFitsOneObject(t *testing.T) {
 	if got := (&BoardsTransport{}).PreferredBatchBytes(); got != boardsBatchBytes {
 		t.Fatalf("PreferredBatchBytes() = %d, want the board's own ceiling of %d", got, boardsBatchBytes)
 	}
-	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 100 {
-		t.Fatalf("PreferredBatchLingerMs() = %d, want at least 100 ms: a shorter window turns the same bytes into more objects per second", got)
+	if got := (&BoardsTransport{}).PreferredBatchLingerMs(); got < 250 {
+		t.Fatalf("PreferredBatchLingerMs() = %d, want at least 250 ms: the deadline is what fills an object, and 100 ms at the old pace left 1.6 KiB objects and 20 KB/s", got)
+	}
+}
+
+// The carrier is only as fast as objects per second x object size, and the object
+// size is roughly the carrier rate times the batch deadline. If events/s x linger
+// (in seconds) is near 1, a busy writer drains batches slightly faster than they
+// can fill, objects stay tiny and the tunnel collapses - which is exactly what
+// v1.0.52's 18/s with a 100 ms deadline did.
+func TestBoardsBatchPipelineFillsAtTheEventCeiling(t *testing.T) {
+	linger := float64((&BoardsTransport{}).PreferredBatchLingerMs()) / 1000
+	if objects := float64(boardsRateMax) * linger; objects < 4 {
+		t.Fatalf("event ceiling %v/s x linger %vs = %v objects per window, want at least 4 or batches never fill", boardsRateMax, linger, objects)
+	}
+	if got := float64(boardsRateMax) * float64(boardsBatchBytes); got < 500_000 {
+		t.Fatalf("event ceiling %v/s x %d bytes = %v B/s at full objects, want at least 500 KB/s (the stand measured 641 KB/s)", boardsRateMax, boardsBatchBytes, got)
+	}
+}
+
+// Deletions must not delete an object the other peer may still be reading off the
+// board, and must not spend an event each: both want a window measured in
+// seconds, not in milliseconds.
+func TestBoardsDropWindowIsMeasuredInSeconds(t *testing.T) {
+	if boardsDropWindow < time.Second {
+		t.Fatalf("boardsDropWindow = %v, want at least a second", boardsDropWindow)
+	}
+	if boardsDropQueueMax <= 0 {
+		t.Fatalf("boardsDropQueueMax = %d, want a bound on the queued deletions", boardsDropQueueMax)
 	}
 }
 
@@ -256,13 +283,13 @@ func TestBoardsPacerStartsSlowAndClimbsToTheCeiling(t *testing.T) {
 		t.Fatalf("currentRate() = %v, want the conservative start %v", got, boardsRateStart)
 	}
 	// The first write may go at once; the following slots are one interval apart.
-	if d := p.reserve(); d != 0 {
+	if d := p.reserve(0); d != 0 {
 		t.Fatalf("first reserve() = %v, want no wait", d)
 	}
-	if d := p.reserve(); d != 200*time.Millisecond {
+	if d := p.reserve(0); d != 200*time.Millisecond {
 		t.Fatalf("second reserve() = %v, want one 200 ms interval at %v/s", d, boardsRateStart)
 	}
-	if d := p.reserve(); d != 400*time.Millisecond {
+	if d := p.reserve(0); d != 400*time.Millisecond {
 		t.Fatalf("third reserve() = %v, want the second interval queued behind the first", d)
 	}
 
@@ -279,13 +306,13 @@ func TestBoardsPacerStartsSlowAndClimbsToTheCeiling(t *testing.T) {
 func TestBoardsPacerHalvesOnRateLimitAndFloors(t *testing.T) {
 	clk := &fakeBoardsClock{at: time.Unix(1_700_000_000, 0)}
 	p := newBoardsPacerOn(clk)
-	p.reserve()
+	p.reserve(0)
 
 	first := p.onRateLimited()
 	if first >= boardsRateStart {
 		t.Fatalf("rate after RATE_LIMITED = %v, want it below the start %v", first, boardsRateStart)
 	}
-	if d := p.reserve(); d < boardsRateHold {
+	if d := p.reserve(0); d < boardsRateHold {
 		t.Fatalf("reserve() after RATE_LIMITED = %v, want at least the %v hold", d, boardsRateHold)
 	}
 
@@ -304,19 +331,53 @@ func TestBoardsPacerHalvesOnRateLimitAndFloors(t *testing.T) {
 	}
 }
 
+// A slot costs the object's bytes as well as an event: at the ceiling a full
+// 48 KiB object is charged 48 KiB of the 1.5 MB/s byte budget. Filling the object
+// is therefore what buys throughput, and a 1.6 KiB object is still bounded by the
+// event budget, not by bytes.
+func TestBoardsPacerChargesTheObjectBytes(t *testing.T) {
+	ceilingPacer := func() *boardsPacer {
+		p := newBoardsPacerOn(&fakeBoardsClock{at: time.Unix(1_700_000_000, 0)})
+		for i := 0; i < 200; i++ {
+			p.onSuccess()
+		}
+		if got := p.currentRate(); got != boardsRateMax {
+			t.Fatalf("currentRate() = %v, want the ceiling %v", got, boardsRateMax)
+		}
+		return p
+	}
+
+	events := ceilingPacer()
+	events.reserve(0)
+	eventGap := events.reserve(0)
+	if eventGap < 20*time.Millisecond || eventGap > 21*time.Millisecond {
+		t.Fatalf("object slot = %v, want ~20.8 ms at the %v/s ceiling", eventGap, boardsRateMax)
+	}
+
+	bytes := ceilingPacer()
+	bytes.reserve(boardsBatchBytes)
+	byteGap := bytes.reserve(boardsBatchBytes)
+	if byteGap < 31*time.Millisecond || byteGap > 33*time.Millisecond {
+		t.Fatalf("full-object slot = %v, want ~32 ms (%d bytes at %v B/s)", byteGap, boardsBatchBytes, boardsRateBytes)
+	}
+	if byteGap <= eventGap {
+		t.Fatalf("full object waited %v, want more than the %v event slot", byteGap, eventGap)
+	}
+}
+
 // A board whose budget is below the floor cannot be met by halving the rate any
 // further, so the hold itself backs off instead of letting a refusal storm run.
 func TestBoardsPacerBacksOffTheHoldAtTheFloor(t *testing.T) {
 	clk := &fakeBoardsClock{at: time.Unix(1_700_000_000, 0)}
 	p := newBoardsPacerOn(clk)
-	p.reserve()
+	p.reserve(0)
 	for i := 0; i < 6; i++ {
 		p.onRateLimited()
 	}
 	if got := p.currentRate(); got != boardsRateMin {
 		t.Fatalf("currentRate() = %v, want the floor %v", got, boardsRateMin)
 	}
-	if d := p.reserve(); d < boardsRateHoldMax {
+	if d := p.reserve(0); d < boardsRateHoldMax {
 		t.Fatalf("reserve() at the floor = %v, want at least the %v backoff ceiling", d, boardsRateHoldMax)
 	}
 }
