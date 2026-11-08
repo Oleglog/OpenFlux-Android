@@ -1,6 +1,7 @@
 package cupsonline
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -148,3 +149,34 @@ func TestPreferredBatchFitsTheCarrierLimit(t *testing.T) {
 	}
 }
 
+// A pong must not wait behind the data path: the ping handler only raises a
+// flag, so a held write lock cannot keep it from returning (a pong stuck
+// behind queued writes is the 3012 "no pong" close seen on the stand).
+func TestPingDoesNotBlockOnTheWritePath(t *testing.T) {
+	t.Parallel()
+	w := &cupsWS{
+		config: DefaultCupsonlineConfig(),
+		pongCh: make(chan struct{}, 1),
+		ctx:    context.Background(),
+		stats:  &channelStats{},
+	}
+	w.writeMu.Lock() // a data write is in progress
+	defer w.writeMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		w.handleReply([]byte("{}"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleReply blocked on the write path while answering a ping")
+	}
+	if !w.pongDue.Load() {
+		t.Fatal("pong was not marked due")
+	}
+	if len(w.pongCh) != 1 {
+		t.Fatal("pong was not handed to the pong loop")
+	}
+}
