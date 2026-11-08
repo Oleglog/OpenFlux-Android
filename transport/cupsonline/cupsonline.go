@@ -74,6 +74,13 @@ type CupsonlineConfig struct {
 	MaxMessageData  int
 	MaxCursors      int
 	BatchTimeout    time.Duration
+	// BatchLingerMs is the upper batcher's coalescing window. The carrier moves
+	// 10-25 KB/s, so the window sets the object size: at the batcher's default
+	// 5 ms a busy channel shipped near-empty objects, the stripe retransmitted
+	// more than it sent (rtx 492 > tx 421, loss 27-71%) and the relay treated
+	// the bursts as abuse. 100 ms turns that into full 24 KB objects at the
+	// same rate. OPENFLUX_CUPS_BATCH_LINGER_MS overrides it.
+	BatchLingerMs int
 
 	// SendInterval is the least time between two messages on one channel.
 	// cups.online throttles inbound, and firing messages back to back stalls
@@ -134,6 +141,12 @@ func DefaultCupsonlineConfig() CupsonlineConfig {
 		MaxMessageData: cupsEnvInt("OPENFLUX_CUPS_MAX_MESSAGE", 8192),
 		MaxCursors:     1000,
 		BatchTimeout:   2 * time.Millisecond,
+		// 100 ms: the upper batcher may send 24 KB per object here (3/4 of
+		// BatchMaxBytes), and at 10-25 KB/s that object takes 1-2 s to fill only
+		// on a saturated link - the window is what keeps it from leaving
+		// half-empty. Anything below ~20 ms brings back the 5 ms behaviour the
+		// phone showed (rtx > tx, loss 27-71%).
+		BatchLingerMs: cupsEnvInt("OPENFLUX_CUPS_BATCH_LINGER_MS", 100),
 		// 12ms (~83 msg/s per channel) — calibrated by bench_tune.py:
 		// 8192B@12ms = 447 KB/s per lane (2.8× vs old 4096@18ms=159 KB/s);
 		// 10ms triggers 403. OPENFLUX_CUPS_SEND_INTERVAL_MS overrides it.
@@ -623,6 +636,7 @@ type cupsWS struct {
 
 	sendQueue chan []byte
 
+
 	stats *channelStats
 }
 
@@ -631,6 +645,7 @@ func (w *cupsWS) nextID() int64 { return w.rpcID.Add(1) }
 func (w *cupsWS) auth() *cupsAuth { return w.authPtr.Load() }
 
 func (w *cupsWS) writeRaw(data []byte) error {
+
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 	if w.conn == nil {
@@ -646,6 +661,7 @@ func (w *cupsWS) writeRaw(data []byte) error {
 	}
 	return nil
 }
+
 
 func (w *cupsWS) writeJSON(v interface{}) error {
 	data, err := json.Marshal(v)
@@ -677,6 +693,8 @@ const allPoolDeadRetryMax = 2 * time.Minute
 // inside 100-400 ms when the peer is there, so a minute of one-way traffic is
 // a dead pair, not a slow one.
 const peerSilentAfter = 60 * time.Second
+
+
 
 func (w *cupsWS) run() {
 	delay := w.config.ReconnectMinDelay
@@ -1623,6 +1641,18 @@ func (t *CupsonlineTransport) PreferredBatchBytes() int {
 		return 16_000
 	}
 	return t.config.BatchMaxBytes * 3 / 4
+}
+
+// PreferredBatchLingerMs is how long the upper batcher may coalesce before it
+// flushes. Without it the batcher uses its 5 ms default, which on a 10-25 KB/s
+// carrier ships near-empty objects: the phone's log showed rtx > tx, loss
+// 27-71% and a "4th send" every second - the stripe choking on its own small
+// objects, which is what the relay answers with refusals.
+func (t *CupsonlineTransport) PreferredBatchLingerMs() int {
+	if t.config.BatchLingerMs <= 0 {
+		return 0
+	}
+	return t.config.BatchLingerMs
 }
 
 // IsConnected is true while at least one room's channel is up, so the app
