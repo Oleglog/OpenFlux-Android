@@ -1,119 +1,126 @@
 <div align="center">
   <img src="design/logo/avatar.svg" width="112" alt="Логотип OpenFlux">
   <h1>OpenFlux Android</h1>
-  <p>VPN через документ-транспорт для Android, компьютера и выходной Linux-ноды.</p>
+  <p>Ядро транспортов и выходная нода для туннеля поверх «белых» сервисов.</p>
   <p>
     <a href="https://github.com/Oleglog/OpenFlux-Android/releases/latest"><img src="https://img.shields.io/github/v/release/Oleglog/OpenFlux-Android?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=7aa2f7" alt="Последний релиз"></a>
     <a href="https://github.com/Oleglog/OpenFlux-Android/actions/workflows/ci.yml"><img src="https://github.com/Oleglog/OpenFlux-Android/actions/workflows/ci.yml/badge.svg" alt="Статус CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/Oleglog/OpenFlux-Android?style=flat-square" alt="Лицензия GPL-3.0"></a>
-    <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&amp;logo=android&amp;logoColor=white" alt="Android 8 или новее">
   </p>
   <p><a href="README.md">English</a> · <strong>Русский</strong></p>
 </div>
 
-![OpenFlux Android: подключение, логи и настройки](docs/images/openflux-android-tabs.png)
+> Форк [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux). Исходный проект — туннель через совместное редактирование документов (Яндекс.Документы, Mail.ru Docs). Здесь он вырос в настраиваемое ядро: несколько носителей, полоса из нескольких каналов с ARQ, сквозное шифрование и изолированные режимы выходной ноды.
 
-> Это форк проекта [p1neappleXpress/OpenFlux](https://github.com/p1neappleXpress/OpenFlux) с нативным клиентом Android VPN, поддержкой документов Mail.ru Docs, нового движка Яндекс.Документов («Волга») и опциональным сквозным шифрованием AES-256-GCM.
-
-OpenFlux — исследовательский TCP-туннель с подключаемыми транспортами через совместное редактирование документов.
-
-**[Скачать релизы (APK и бинарники сервера)](https://github.com/Oleglog/OpenFlux-Android/releases/latest)**
+Этот репозиторий — **Go-ядро и бинарник `openflux`**. Android-приложение, которым пользуется человек, живёт отдельно: [OlConnect_client](https://github.com/Oleglog/OlConnect_client). Панель управления и сервер подписок — тоже отдельно: [OlConnect_manager](https://github.com/Oleglog/OlConnect_manager).
 
 ```text
-Android VPN или SOCKS5-клиент -> Яндекс.Документы (Volga / Classic) или Mail.ru Docs -> Linux-нода -> интернет
+Телефон или SOCKS5-клиент -> носитель (Доски, Cups, ...) -> выходная нода -> интернет
 ```
 
-## Возможности
+## Что умеет
 
-- Android-клиент для Android 8+ на системном `VpnService` (ARM64, ARMv7, x86, x86_64);
-- **Поддерживаемые транспорты**:
-  - **Яндекс.Документы**: автоопределение редактора «Волга» (транспорт `vyandex`) и классического редактора (`yandex`);
-  - **Mail.ru Docs**: редактор документов Mail.ru (транспорт `mailru`);
-- **Опциональное сквозное шифрование AES-256-GCM**:
-  - Защита данных от чтения провайдером облачного сервиса документов;
-  - Деривация ключей через scrypt и защита от атак повторного воспроизведения (replay attack);
-  - По умолчанию ключи не требуются (режим без шифрования для максимальной простоты), при желании ключ задается на сервере и клиенте;
-- **Настраиваемые кодеки**:
-  - `legacy`: сжатие LZ4 (по умолчанию на сервере OlConnect Manager для 100% обратной совместимости);
-  - `batched`: батчинг пакетов с компрессией zstd для высокоскоростных каналов;
-- **Изоляция сети и оптимизация**:
-  - Флаг `--local-ip` для явной привязки сетевого интерфейса на VPS;
-  - Буферы 16 MiB для плавной передачи трафика;
-- Готовые собранные бинарники для Linux VPS прямо в релизах;
-- DNS-over-HTTPS на Android;
-- SOCKS5-клиент для компьютера и режим выходной Linux-ноды.
+- **Носители (транспорты)** — канал, внутри которого едет наш трафик. Подробности и статус в таблице ниже.
+- **Полоса из нескольких каналов.** `striped.go` режет поток на куски, раскладывает их по каналам, восстанавливает порядок и переспрашивает потерянное (ARQ с окном переупорядочивания и повторами). Один канал не может быть быстрее своей задержки — полоса получается из нескольких.
+- **Кодек пакетов.** `batched` (по умолчанию) — склейка пакетов и zstd, подсказки о размере батча и окне склейки пробрасываются через все обёртки; `legacy` — по пакету, LZ4.
+- **Сквозное шифрование AES-256-GCM** с деривацией ключа через scrypt и защитой от повторного воспроизведения. Для Досков ключ **обязателен**: доска отбрасывает кадры, в которых видно IP-пакеты.
+- **Два режима выходной ноды**: `l4` (по умолчанию, gVisor, TCP в user-space, наружу через SOCKS5) и `l3` (сырые сокеты ядра, L3 IP-пакеты, тот же кадр, что у телефона). `l3` нужен для телефонного пути, `l4` безопасен на изолированном стенде.
+- **Клиент для проверки без телефона**: `--client` поднимает SOCKS5, `--tun` гоняет настоящий IP-трафик через существующий TUN-интерфейс — так проверяется именно телефонный путь.
 
----
+## Носители и их состояние
 
-## Быстрый запуск
+| Носитель | `--transport` | Состояние | Замеры на стенде |
+| --- | --- | --- | --- |
+| Яндекс Доски | `boards` | **Основной, самый быстрый** | 1 МБ за 1.56 с (641 КБ/с), 10 МБ — 694 КБ/с, на 60 с — 952 КБ/с, `refused=0` |
+| Cups | `cups` / `cupsonline` | **Рабочий** | 10 МБ за 136 с — 71.8 КБ/с при 8 комнатах (до исправления кадрирования — 11 КБ/с и остановка на 40–45 с) |
+| Яндекс.Документы (Волга) | `volga` / `vyandex` | Работает, но медленно — резерв | 5–7 КБ/с |
+| Mail.ru Docs | `mailru` | Работает, но медленно — резерв | 6–8 КБ/с |
+| Telemost | `telemost` | **Закрыт**: внешний потолок SFU, не наша сторона | — |
+| Avito | `avito` | Сломан на стороне сервиса | — |
+| Bitrix24 | `bitrix24` / `b24` | Экспериментальный | — |
+| MAX / OneMe | `oneme` | Не реализовано: нужны `--maxToken` и `--maxUid` | — |
 
-### 1. Подготовка документа
+Цифры получены на живом VPS, один и тот же путь, что у телефона. Доски быстрее всех за счёт того, что объект уходит одним большим значением (до 48 КиБ, у нас 45000 байт с запасом под ограничение доски в 65536 символов).
 
-#### Вариант A: Яндекс.Документы
-1. Создайте текстовый документ на [Яндекс Диске](https://disk.yandex.ru/).
-2. Откройте к нему доступ: **«Поделиться» → «Редактирование по ссылке»**.
-3. Скопируйте ссылку на документ.
+## Быстрый запуск выходной ноды
 
-#### Вариант B: Mail.ru Docs
-1. Создайте текстовый документ в [Облаке Mail.ru](https://cloud.mail.ru/).
-2. Включите доступ по ссылке с правом редактирования и скопируйте ссылку.
-
-### 2. Запуск на сервере (VPS)
-Скачайте готовый бинарник сервера из релизов:
 ```bash
-wget https://github.com/Oleglog/OpenFlux-Android/releases/latest/download/openflux-linux-amd64 -O openflux
-chmod +x openflux
+# бинарник из последнего релиза
+gh release download v1.0.63 --repo Oleglog/OpenFlux-Android --pattern 'openflux-linux-amd64'
+install -m 755 openflux-linux-amd64 /usr/local/bin/openflux
 
-# Заглушить RST-пакеты (обязательно на Linux exit-node):
-sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+# на Linux нужен RST-drop, иначе ядро отвечает на чужие пакеты:
+iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
-# Запуск без шифрования (по умолчанию):
-sudo nohup ./openflux --exit-node --url "ВАША_ССЫЛКА_НА_ДОКУМЕНТ" > openflux.log 2>&1 &
-
-# Или со сквозным шифрованием AES-256-GCM:
-sudo nohup ./openflux --exit-node --url "ВАША_ССЫЛКА_НА_ДОКУМЕНТ" --encryption-key "СЕКРЕТНЫЙ_КЛЮЧ_ОТ_16_СИМВОЛОВ" > openflux.log 2>&1 &
+# Доски: ключ обязателен, ссылка на доску — как у клиента
+openflux --exit-node --mode l4 --transport boards \
+  --url "https://docs.yandex.ru/..." \
+  --encryption-key "$(cat /etc/openflux/key.hex)" \
+  --socks5 127.0.0.1:1080
 ```
-*(Проверить логи сервера: `tail -f openflux.log`, остановить: `sudo pkill -f openflux`)*.
 
-### 3. Запуск на Android
-1. Скачайте `OpenFlux-android-arm64-v8a-debug.apk` (или `universal`) из [релизов](https://github.com/Oleglog/OpenFlux-Android/releases/latest).
-2. Во вкладке **«Настройки»** вставьте ссылку на ваш документ.
-3. На главном экране нажмите **«Запустить VPN»**. Клиент автоматически определит тип редактора (Mail.ru, Volga или классический) и подключится.
+`l3`-режим (телефонный путь) требует root и свободного TUN-устройства; `l4` обходится без сырых сокетов, поэтому годится для тестов на общем сервере.
 
----
+## Клиент для проверки и для компьютера
 
-## Флаги командной строки
+```bash
+# SOCKS5-клиент на компьютере
+openflux --client --transport boards --url "..." --encryption-key "..." --socks5 127.0.0.1:1080
 
-| Флаг | По умолчанию | Описание |
+# телефонный путь: настоящий IP через готовый TUN
+ip tuntap add dev ofxb mode tun && ip link set ofxb up
+ip addr add 10.10.10.2/32 dev ofxb
+ip route replace default dev ofxb table 100
+ip rule add priority 100 from 10.10.10.2 lookup 100
+openflux --client --transport boards --url "..." --encryption-key "..." --tun ofxb
+curl --interface 10.10.10.2 https://example.com
+```
+
+## Флаги
+
+| Флаг | По умолчанию | Что делает |
 | --- | --- | --- |
-| `--client` | выкл. | Запустить SOCKS5-клиент |
-| `--exit-node` | выкл. | Запустить выходную ноду (нужен root) |
-| `--socks5` | `:1080` | Адрес SOCKS5-прокси |
-| `--transport` | `yandex` | Транспорт (`yandex`, `mailru`, `oneme`) |
-| `--url` | пусто | Ссылка в аргументе; безопаснее `--url-file` |
-| `--url-file` | пусто | Прочитать ссылку на документ из файла |
-| `--encryption-key` | пусто | Секретный ключ сквозного шифрования AES-256-GCM |
-| `--encryption-key-file` | пусто | Прочитать секретный ключ шифрования из файла |
-| `--codec` | `batched` | Кодек пакетов: `legacy` (LZ4) или `batched` (zstd) |
-| `--local-ip` | пусто | Локальный IP-адрес для исходящих соединений ноды |
-| `--debug` | выкл. | Включить подробные логи |
+| `--exit-node` | выкл. | Выходная нода (нужен root для `l3`) |
+| `--client` | выкл. | Клиент: SOCKS5 или `--tun` |
+| `--mode` | `l4` | `l4` — gVisor и SOCKS5, `l3` — сырые сокеты ядра |
+| `--transport` | `yandex` | `boards`, `cups`, `volga`, `mailru`, `telemost`, `avito`, `bitrix24`, `oneme`, `yandex` |
+| `--url` / `--url-file` | пусто | Ссылка на документ/доску/комнату |
+| `--encryption-key` / `--encryption-key-file` | пусто | Ключ AES-256-GCM |
+| `--codec` | `batched` | `batched` (zstd и склейка) или `legacy` (LZ4 по пакету) |
+| `--socks5` | `:1080` | Адрес SOCKS5 |
+| `--tun` | пусто | Клиент поверх существующего TUN (телефонный кадр, нужен `l3`-выход) |
+| `--local-ip` | пусто | Исходящий IP выходной ноды |
+| `--warp-proxy` | пусто | WARP/SOCKS5 для выходного трафика в `l4` |
+| `--socks-proxy` | пусто | Прокси для сигналинга транспорта |
+| `--cookies` / `--cookies-file` | пусто | Netscape cookies.txt для Волги и Mail.ru |
+| `--maxToken` / `--maxUid` | пусто | MAX, транспорт пока не реализован |
+| `--debug` | выкл. | Подробные логи |
 
----
+Отдельные `STRIPE_*` и `OPENFLUX_CUPS_*` переменные окружения управляют полосой и пейсером носителя; их значения по умолчанию подобраны замерами и менять их без стенда не стоит.
 
-## Сборка из исходников (для разработчиков)
+## Сборка и релизы
 
-```bash
-# Сборка сервера для Linux:
-go build -o openflux .
+Локальные сборки и тесты в этом проекте **не запускаются** — только GitHub Actions: `ci.yml` (тесты и линтеры) и `release.yml` (бинарники Linux amd64/arm64, Windows, debug-APK). Тег `v1.0.x` — релиз; собрать локально можно только для проверки синтаксиса.
 
-# Сборка Android APK:
-./build_android_app.sh
-```
+Релизы консолидированы: вся история версий от `v1.0.0` до текущей описана в одном глобальном релизе, теги и история git сохранены.
 
-Дополнительные сведения находятся в [android/README.md](android/README.md).
+## Что больше не работает и почему
 
----
+- **Telemost** — закрыт. Потолок на стороне SFU: он теряет 10–30 % ретранслируемого в пачках, и никакая наша настройка это не меняет.
+- **Avito** — сломан на стороне сервиса, воспроизводится без нашего участия.
+- **Волга и Mail.ru** — не сломаны, но их 5–8 КБ/с недостаточно: держим как резерв, работы по ним не ведутся.
+- **MAX / OneMe** — транспорт не реализован, нужны токены и идентификаторы звонка.
+- **Отдельные головы Android-клиента в этом репозитории** — наследие форка: рабочий клиент теперь в [OlConnect_client](https://github.com/Oleglog/OlConnect_client), здесь остаются только debug-сборки для совместимости.
+
+## Экспериментальное
+
+Дизайн-эксперимент «Рейка» (новая визуальная система панели и клиента) откатан из основного кода и лежит в ветках `experimental/design-rail-2026-11` в репозиториях клиента и панели, макеты — вне репозиториев. В основном коде его нет.
+
+## Связанные репозитории
+
+- [OlConnect_client](https://github.com/Oleglog/OlConnect_client) — Android-приложение (VPNService, профили, подписки, оформление).
+- [OlConnect_manager](https://github.com/Oleglog/OlConnect_manager) — панель управления, лаунчер инстансов, сервер подписок и зеркало.
 
 ## Лицензия
 
-OpenFlux распространяется по лицензии GNU General Public License v3.0 или более поздней версии. См. [LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT) и [NOTICE](NOTICE). Этот форк не одобрен компаниями Яндекс или VK (Mail.ru) и не связан с ними.
+GNU General Public License v3.0 или более поздняя. См. [LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT), [NOTICE](NOTICE). Форк не одобрен компаниями Яндекс или VK (Mail.ru) и не связан с ними.
