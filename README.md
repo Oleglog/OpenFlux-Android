@@ -45,7 +45,7 @@ Numbers come from a live VPS over the same path the phone uses. Boards wins beca
 ## Exit node in a hurry
 
 ```bash
-gh release download v1.0.63 --repo Oleglog/OpenFlux-Android --pattern 'openflux-linux-amd64'
+gh release download v2.0.0 --repo Oleglog/OpenFlux-Android --pattern 'openflux-linux-amd64'
 install -m 755 openflux-linux-amd64 /usr/local/bin/openflux
 
 # Linux needs the RST drop, or the kernel answers packets that are not ours:

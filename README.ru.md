@@ -46,7 +46,7 @@
 
 ```bash
 # бинарник из последнего релиза
-gh release download v1.0.63 --repo Oleglog/OpenFlux-Android --pattern 'openflux-linux-amd64'
+gh release download v2.0.0 --repo Oleglog/OpenFlux-Android --pattern 'openflux-linux-amd64'
 install -m 755 openflux-linux-amd64 /usr/local/bin/openflux
 
 # на Linux нужен RST-drop, иначе ядро отвечает на чужие пакеты:
